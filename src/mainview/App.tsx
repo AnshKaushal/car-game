@@ -10,6 +10,8 @@ import Dashboard from './ui/Dashboard';
 import { SpeedLines } from './ui/SpeedLines';
 import { CAR_PHYSICS } from './constants/physics';
 
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+
 const initialTele: CarTelemetry = {
   speedKmh: 0, rpm: 800, gear: 1, gearLabel: '1', autoMode: true,
   throttle: 0, brake: 0, steer: 0, shifting: false,
@@ -27,29 +29,28 @@ export default function App() {
   // speed-lines strength 0..1, written every frame from the render loop via a
   // ref (no re-render) so it stays perfectly smooth at 60fps
   const speedLinesRef = useRef<HTMLDivElement | null>(null);
-  const lastSpreadRef = useRef(-1);
+  const speedLinesOn = useRef(false);
   const setSpeedLines = (v: number) => {
     const el = speedLinesRef.current;
     if (!el) return;
     if (v <= 0.001) {
-      if (lastSpreadRef.current !== -1) {
-        lastSpreadRef.current = -1;
+      if (speedLinesOn.current) {
+        speedLinesOn.current = false;
         el.style.opacity = '0';
         // park the layer: stops the compositor ticking 20 animations while idle
         el.classList.add('sl-off');
       }
       return;
     }
-    if (el.classList.contains('sl-off')) el.classList.remove('sl-off');
-    el.style.opacity = String(Math.min(1, v) * CAR_PHYSICS.assists.speedFeel.linesStrength);
-    // push streaks outward from the vanishing point as speed builds.
-    // Quantized: rewriting a custom property every frame forces a style
-    // recalc down the whole overlay subtree for no visible gain.
-    const spread = 1.06 - v * 0.32;
-    if (Math.abs(spread - lastSpreadRef.current) > 0.02) {
-      lastSpreadRef.current = spread;
-      el.style.setProperty('--sl-spread', String(spread));
+    if (!speedLinesOn.current) {
+      speedLinesOn.current = true;
+      el.classList.remove('sl-off');
     }
+    // Opacity only. The overlay is a FIXED size — scaling it with speed made
+    // the whole thing visibly shrink as you went faster, which read as the
+    // effect powering down rather than intensifying. The streaks already fly
+    // outward on their own animation; nothing else needs to change.
+    el.style.opacity = String(Math.min(1, v) * CAR_PHYSICS.assists.speedFeel.linesStrength);
   };
   const startedRef = useRef(false);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
@@ -134,6 +135,9 @@ export default function App() {
         const camPos = new THREE.Vector3(startX, 3, 8);
         const camLook = new THREE.Vector3();
         const smoothFwd = new THREE.Vector3(0, 0, -1);
+        // Smoothed look-ahead distance (metres along the car's heading). This
+        // is a SCALAR, which is the whole point — see the camLook build below.
+        let lookAheadSm = 6;
 
         // GTA-style free camera. The camera follows the CAR'S HEADING only,
         // never the cursor position or the direction of travel — moving the
@@ -230,7 +234,12 @@ export default function App() {
           raf = requestAnimationFrame(loop);
           let dt = (now - last) / 1000;
           last = now;
-          dt = Math.min(dt, 1 / 20);
+          // Cap the frame the same way CarController caps its own integration window.
+          // If the loop advanced the world further than the tire forces were
+          // integrated for, grip silently dropped on a slow machine — which
+          // reads as "the car won't respond" and gets worse the worse the
+          // framerate gets.
+          dt = Math.min(dt, CAR_PHYSICS.simulation.maxFrameDt);
 
           const inp = input.update(dt);
           if (!startedRef.current && inp.startPressed) startGame();
@@ -313,16 +322,32 @@ export default function App() {
           const SF = CAR_PHYSICS.assists.speedFeel;
           const vAbs = Math.abs(car.forwardSpeed) * 3.6;
           const sfFov = Math.min(1, vAbs / SF.fovAtMaxSpeedKmh);
-          const targetFov = SF.fovBase + (SF.fovMax - SF.fovBase) * sfFov * sfFov;
+          // The FOV widening is a *behind-the-car* effect. Held all the way
+          // open while orbited to the side, 104deg turns the scene into a
+          // fisheye that swims horribly at speed, so ease the widening back
+          // toward the base FOV as you swing off the tail.
+          const offAxis = clamp(Math.abs(camYaw) / (Math.PI / 2), 0, 1);
+          const fovCeil = SF.fovBase + (SF.fovMax - SF.fovBase) * (1 - offAxis * 0.55);
+          const targetFov = SF.fovBase + (fovCeil - SF.fovBase) * sfFov * sfFov;
           if (Math.abs(camera.fov - targetFov) > 0.02) {
             camera.fov += (targetFov - camera.fov) * Math.min(1, dt * 3.5);
             camera.updateProjectionMatrix();
           }
           setSpeedLines(Math.min(1, Math.max(0, (vAbs - SF.linesFromKmh) / (SF.fovAtMaxSpeedKmh - SF.linesFromKmh))));
-          // look AT the car when orbited to the side/front (full 6m ahead only
-          // directly behind) — otherwise the car slides out of frame
-          const lookAhead = 6 * Math.max(0, Math.cos(camYaw));
-          camLook.lerp(carPos.clone().addScaledVector(smoothFwd, lookAhead).add(new THREE.Vector3(0, 1.1, 0)), 1 - Math.exp(-dt * 25));
+
+          // Look point is rebuilt EXACTLY from the car's current position every
+          // frame — zero positional lag. It used to be lerped in world space,
+          // which trails by v * (1/rate): at 320km/h that is ~3m of lag, so
+          // the camera aimed at empty road BEHIND the car and the car visibly
+          // slid out of frame the moment you orbited to the side at speed.
+          // Only the scalar look-ahead is smoothed, which kills jitter without
+          // introducing any lag at any velocity.
+          const tgtLookAhead = 6 * Math.max(0, Math.cos(camYaw));
+          lookAheadSm += (tgtLookAhead - lookAheadSm) * (1 - Math.exp(-dt * 8));
+          camLook.copy(carPos).addScaledVector(smoothFwd, lookAheadSm);
+          // raise the aim point as the camera rises, so a high side-on view
+          // doesn't drop the car to the bottom of the frame
+          camLook.y += 1.1 + Math.max(0, camPitch) * 1.8;
           camera.position.copy(camPos);
           camera.lookAt(camLook);
 

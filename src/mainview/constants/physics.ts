@@ -161,6 +161,13 @@ export const CAR_PHYSICS = {
     steering: {
       maxAngle: 0.6, // radians (~34 degrees)
       speedSensitivity: 0.6, // Reduce steering at high speed
+      // Speed (km/h) at which speedSensitivity bites hardest. Raising this
+      // keeps meaningful steering lock well past 200km/h.
+      speedFalloffKmh: 190,
+      // Floor on usable steering lock (radians) regardless of speed. ~0.05
+      // rad = 2.9 degrees, so the car always reacts to countersteer instead
+      // of going numb at high speed.
+      minAngleAtSpeed: 0.05,
       ackermannFactor: 0.3, // 0 = parallel, 1 = perfect ackermann
       returnSpeed: 3.0, // rad/s steering return to center
     },
@@ -182,6 +189,11 @@ export const CAR_PHYSICS = {
     tractionControl: 0.3,
     // Stability control (0 = off, 1 = full)
     stabilityControl: 0.2,
+    // How hard the ESC chases the yaw moment the driver is asking for while
+    // the car is sideways. Without this, countersteering into a slide only
+    // unwound the angle slowly and the car felt like it had locked into the
+    // slide. 0 disables it.
+    countersteerAssist: 4500,
     // Speed sensation: FOV widening with speed, screen-edge speed lines,
     // and camera shake. Only affects presentation, never handling.
     speedFeel: {
@@ -202,6 +214,12 @@ export const CAR_PHYSICS = {
   simulation: {
     subSteps: 8, // Physics sub-steps per frame
     maxSubStep: 1 / 60,
+    // Longest frame the physics is allowed to integrate in one go. The render
+    // loop and CarController MUST agree on this: if the loop advances the
+    // world further than the tire forces were integrated for, grip silently
+    // drops on a slow machine (the car goes vague and unresponsive under load
+    // exactly when the frame rate dips). One shared value, no drift.
+    maxFrameDt: 1 / 30,
     // Wheel raycast distance
     raycastDistance: 0.4,
     // Chassis raycast for ground detection

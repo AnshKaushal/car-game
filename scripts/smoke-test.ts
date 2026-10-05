@@ -227,5 +227,98 @@ check('top gear pulls without downshifting', t.gear === 8 && Math.abs(t.speedKmh
 // stop cascade: brake to a halt in auto — box must walk back down to 1st
 for (let i = 0; i < 10 * 120; i++) { t = car.update(1 / 120, S); world.step(); }
 check('auto returns to 1st after stopping', t.gear === 1, 'gear=' + t.gearLabel);
+
+// --- countersteer at speed ------------------------------------------------
+// Regression: full lock used to be capped at ~0.4 degrees above 250km/h, so
+// the car could not be made to change direction no matter how hard you
+// steered, and the ESC's steering deadzone (6.9 deg) was wider than most
+// usable slides so the assist switched itself off exactly when needed.
+// Expected: entry builds a slide, then opposite lock reverses the yaw rate.
+const sideSlip = () => {
+  const v = body.linvel(); const q = body.rotation();
+  const fx = 2 * (q.x * q.z + q.w * q.y), fz = 1 - 2 * (q.x * q.x + q.y * q.y);
+  const rx = 1 - 2 * (q.y * q.y + q.z * q.z), rz = 2 * (q.x * q.z - q.w * q.y);
+  const lat = v.x * rx + v.z * rz, lon = Math.abs(v.x * fx + v.z * fz);
+  return Math.atan2(lat, Math.max(1, lon));
+};
+body.setLinvel({ x: 0, y: 0, z: -70 }, true); // ~250 km/h
+body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+body.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
+car.gear = 8 as any;
+car.rpm = 6000;
+// Old cap budgeted only ~1.25g, which clamped full lock to 0.4deg up here —
+// the car could not be made to change direction at all.
+let steerPeak = 0, yawPeak = 0;
+for (let i = 0; i < 5 * 120; i++) {
+  car.update(1 / 120, { ...idle, throttle: 1, steer: 1 }); world.step();
+  steerPeak = Math.max(steerPeak, Math.abs(car.steerAngle));
+  yawPeak = Math.max(yawPeak, Math.abs(body.angvel().y));
+}
+check('full lock still meaningful at 250km/h', steerPeak > 0.04, `steer=${(steerPeak * 57.3).toFixed(2)}deg`);
+check('power-on turn generates real yaw', yawPeak > 0.1, `yaw=${yawPeak.toFixed(3)}rad/s`);
+for (let i = 0; i < 1.5 * 120; i++) { car.update(1 / 120, { ...idle, throttle: 1, steer: -1 }); world.step(); }
+
+// --- countersteer out of a real power slide ------------------------------
+// Full user scenario: wind the car up to speed, circle it on full throttle,
+// then throw opposite lock WITHOUT lifting. Grip used to barely return and
+// the car kept rotating the way it was already going. Opposite lock must now
+// carry the car THROUGH neutral and out the other side, same throttle held.
+car.reset(new (await import('three')).Vector3(0, 0.72, 0), 0);
+car.autoMode = true;
+for (let i = 0; i < 14 * 120; i++) {
+  car.update(1 / 120, W); world.step();
+  if (i % 60 === 0) { const p = body.translation(); moveGroundBody(gb, p.x, p.z); }
+}
+for (let i = 0; i < 3.5 * 120; i++) {
+  car.update(1 / 120, { ...idle, throttle: 1, steer: 1 }); world.step();
+  if (i % 60 === 0) { const p = body.translation(); moveGroundBody(gb, p.x, p.z); }
+}
+const betaSlide = sideSlip();
+const yawSlide = body.angvel().y;
+const vSlide = Math.abs(car.forwardSpeed) * 3.6;
+// Grip must SURVIVE the throttle. This used to read 35-88 degrees of sideslip
+// at speed because the rear was permanently "spinning" from a flat phantom
+// slip term AND the friction circle left it ~26% of its lateral capacity, so
+// grip never came back while you were on the power. Cornering hard on full
+// throttle at 250km/h in 8th should now stay planted.
+check('grip survives full throttle at speed', Math.abs(betaSlide) < 0.09,
+  `v=${vSlide.toFixed(0)}km/h beta=${(betaSlide * 57.3).toFixed(1)}deg`);
+for (let i = 0; i < 1.6 * 120; i++) {
+  car.update(1 / 120, { ...idle, throttle: 1, steer: -1 }); world.step();
+  if (i % 60 === 0) { const p = body.translation(); moveGroundBody(gb, p.x, p.z); }
+}
+const betaOut = sideSlip();
+const yawOut = body.angvel().y;
+check('countersteer flips the car the other way (250km/h)', yawSlide > 0 && yawOut < 0,
+  `yaw ${yawSlide.toFixed(2)} -> ${yawOut.toFixed(2)} rad/s, beta ${(betaSlide * 57.3).toFixed(1)} -> ${(betaOut * 57.3).toFixed(1)}deg`);
+
+// THE reported bug, at the speed it actually broke: get the car sideways in a
+// low-speed donut (handbrake flick + full lock + full throttle), release the
+// handbrake and throw OPPOSITE lock with the throttle still pinned. Pre-fix
+// the car sat at ~86deg of sideslip and kept rotating the ORIGINAL way
+// (yaw 2.58 -> 1.08) because the rear had no lateral capacity left to give
+// and the ESC was gated off below 29km/h.
+body.setLinvel({ x: 0, y: 0, z: -25 }, true);
+body.setAngvel({ x: 0, y: 0, z: 0 }, true);
+body.setRotation({ x: 0, y: 0, z: 0, w: 1 }, true);
+car.gear = 4 as any;
+car.autoMode = false;
+car.rpm = 5000;
+car.update(1 / 120, idle); world.step();
+for (let i = 0; i < 1.2 * 120; i++) {
+  car.update(1 / 120, { ...idle, throttle: 1, steer: 1, handbrake: true }); world.step();
+  if (i % 60 === 0) { const p = body.translation(); moveGroundBody(gb, p.x, p.z); }
+}
+const yawDonut = body.angvel().y;
+const betaDonut = Math.abs(sideSlip());
+for (let i = 0; i < 1.5 * 120; i++) {
+  car.update(1 / 120, { ...idle, throttle: 1, steer: -1 }); world.step();
+  if (i % 60 === 0) { const p = body.translation(); moveGroundBody(gb, p.x, p.z); }
+}
+const yawDonutOut = body.angvel().y;
+check('donut is entered', yawDonut > 1.5, `yaw=${yawDonut.toFixed(2)}rad/s beta=${(betaDonut * 57.3).toFixed(0)}deg`);
+check('countersteer flips the car the other way (low speed donut)', yawDonut > 0 && yawDonutOut < 0,
+  `yaw ${yawDonut.toFixed(2)} -> ${yawDonutOut.toFixed(2)} rad/s`);
+
 console.log(fails === 0 ? 'ALL CHECKS PASSED' : fails + ' CHECKS FAILED');
 process.exit(fails === 0 ? 0 : 1);

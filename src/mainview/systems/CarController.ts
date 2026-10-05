@@ -138,7 +138,11 @@ export class CarController {
 
   update(dt: number, input: DriveInput): CarTelemetry {
     const P = CAR_PHYSICS;
-    dt = Math.min(dt, 1 / 30);
+    // Same cap the render loop uses — see simulation.maxFrameDt. These MUST match:
+    // the loop hands this same dt to stepWorld, so if we integrated tire forces
+    // over a shorter span than the world advanced, grip would quietly drop
+    // whenever the frame rate dipped.
+    dt = Math.min(dt, P.simulation.maxFrameDt);
     this.simTime += dt;
 
     // --- mode / gear edge inputs ---
@@ -174,12 +178,19 @@ export class CarController {
     // actually hold (~1.3g): at 250kmh+ even full lock is only a few
     // milliradians, so yanking the wheel can't flick the car into a slide.
     const speedKmh = Math.abs(fwdSpeed) * 3.6;
-    const steerFactor = 1 / (1 + Math.pow(speedKmh / 120, 2) * P.wheels.steering.speedSensitivity * 3);
-    const gripCap = Math.atan((2.85 * 12.5) / Math.max(30, fwdSpeed * fwdSpeed));
-    const targetSteer = clamp(
-      input.steer * P.wheels.steering.maxAngle * steerFactor,
-      -gripCap, gripCap
-    );
+    const S = P.wheels.steering;
+    const steerFactor = 1 / (1 + Math.pow(speedKmh / S.speedFalloffKmh, 2) * S.speedSensitivity * 3);
+    // Grip cap: the steer angle that would use up the front axle's whole
+    // lateral budget. Budget is ~3.3g (a loaded outside tyre briefly exceeds
+    // 1g), NOT 1.25g — the old 1.25g budget capped full lock at 0.4 degrees
+    // above 250km/h, which made the car physically unable to change direction
+    // no matter how hard you steered. Anything past the cap just means the
+    // fronts are saturated (understeer), which is the real-world behaviour.
+    const gripCap = Math.atan((2.85 * 32) / Math.max(40, fwdSpeed * fwdSpeed));
+    // ...and a hard floor, because there is always usable lock at speed even
+    // when the fronts are past their peak. Without this the car goes numb.
+    const steerCap = Math.max(gripCap, S.minAngleAtSpeed);
+    const targetSteer = clamp(input.steer * S.maxAngle * steerFactor, -steerCap, steerCap);
     const steerRate = 6;
     this.steerAngle += clamp(targetSteer - this.steerAngle, -steerRate * dt, steerRate * dt);
 
@@ -407,13 +418,19 @@ export class CarController {
       const capLoad = Math.max(800, w.front ? avgFront : avgRear);
 
       // --- longitudinal: drive + brake ---
+      const maxTire = muPeak * capLoad;
       let longForce = 0;
       if (!w.front) {
         // RWD
         const wheelTorque = driveTorquePerRear;
         const tractive = wheelTorque / wheelRadius;
-        // slip ratio approx
-        const spinVel = this.gear === 0 ? vLong : (this.wheelOmega * wheelRadius + (input.throttle * 2.5));
+        // slip ratio approx. The throttle term stands in for wheelspin, which
+        // is a LOW-speed phenomenon — it used to add a flat +2.5 m/s of wheel
+        // speed at every velocity, so simply being on the throttle kept the
+        // rear permanently "spinning" at low speed (and dragged TC in for no
+        // reason). Faded out with road speed.
+        const spinBoost = input.throttle * 2.5 * clamp(1 - Math.abs(vLong) / 22, 0.12, 1);
+        const spinVel = this.gear === 0 ? vLong : (this.wheelOmega * wheelRadius + spinBoost);
         const slip = clamp((spinVel - vLong) / Math.max(3, Math.abs(vLong) + 3), -1, 1);
         totalSlip += Math.abs(slip);
         rearSlipSum += slip;
@@ -422,7 +439,6 @@ export class CarController {
         // spinning tires waste energy (partially rescued by traction control)
         const spinLoss = Math.abs(grip) * 0.28 * (1 - P.assists.tractionControl * 0.6);
         // when no slip, apply tractive directly capped by friction circle
-        const maxTire = muPeak * capLoad;
         longForce = clamp(tractive * (1 - spinLoss), -maxTire, maxTire);
         if (this.gear === 0) longForce = 0;
         // hill-hold: only ever pushes FORWARD against rollback (never fights
@@ -476,7 +492,6 @@ export class CarController {
         if (Math.abs(vLong) < 0.6) b *= Math.abs(vLong) / 0.6;
         const wheelLock = Math.abs(vLong) < 2 && input.brake > 0.7;
         if (P.assists.absEnabled && wheelLock && Math.abs(vLong) > 0.5) b *= 0.6 + 0.4 * Math.sin(this.simTime * 90);
-        const maxTire = muPeak * capLoad;
         longForce += clamp(-Math.sign(vLong || 1) * b, -maxTire - 2000, maxTire + 2000);
         // at standstill, don't push car
         if (Math.abs(vLong) < 0.4 && this.gear >= 1) longForce = clamp(longForce, -4000, 4000);
@@ -505,9 +520,20 @@ export class CarController {
       // wider rear tires: rear grips more (like a real M3 stagger).
       // mild understeer bias up front keeps keyboard driving friendly.
       const maxLat = muPeak * capLoad * (input.handbrake && !w.front ? 0.35 : 1) * (w.front ? 0.92 : 1.15);
-      // friction circle coupling
-      const remaining = Math.max(0, maxLat - Math.abs(longForce) * 0.85);
-      latForce = clamp(latForce, -remaining, remaining);
+      // Friction ELLIPSE, not a subtraction.
+      //
+      // The old coupling was `maxLat - |longForce| * 0.85`, which went to
+      // almost nothing whenever the rear was driving: on full throttle the
+      // longitudinal force sat at the tire limit, leaving the rear axle ~26%
+      // of its lateral capacity. Grip could therefore NEVER come back while
+      // you were on the power — circle the car on full throttle and it stays
+      // loose and refuses to answer the steering, which is exactly the
+      // reported symptom. An ellipse with a floor keeps half the lateral
+      // capacity available even at full longitudinal demand, so the car can
+      // always be caught and pointed again.
+      const latUse = clamp(Math.abs(longForce) / Math.max(1, maxTire), 0, 1);
+      const latRoom = maxLat * clamp(Math.sqrt(Math.max(0, 1 - latUse * latUse * 0.7)), 0.5, 1);
+      latForce = clamp(latForce, -latRoom, latRoom);
       // stability control: damp yaw when sliding
       if (P.assists.stabilityControl > 0 && Math.abs(vLat) > 4) {
         latForce *= 1 + P.assists.stabilityControl * 0.4;
@@ -563,9 +589,16 @@ export class CarController {
     // 1st/2nd/3rd-gear slides re-hook fast, easing off with speed.
     // The handbrake exempts it entirely (donuts/burnouts stay yours).
     // Full authority hands-off at any speed.
-    if (Math.abs(fwdSpeed) > 8 && groundedWheels >= 3 && !input.handbrake) {
+    // Gate used to be >8 m/s (29km/h), which meant a low-speed donut got NO
+    // stability help at all — precisely the regime where the car refuses to
+    // come back. Real ESC works at any speed.
+    if (Math.abs(fwdSpeed) > 2.5 && groundedWheels >= 3 && !input.handbrake) {
       const steering = Math.abs(input.steer) >= 0.05;
-      const deadzone = steering ? 0.12 : 0.02;
+      // Deadzone while steering was 6.9 degrees — WIDER than most usable
+      // slides, so the assist simply switched itself off the moment you
+      // needed it. Now it stays out of the way of small angles but engages
+      // for anything past ~3.4 degrees of slip.
+      const deadzone = steering ? 0.06 : 0.02;
       const betaExcess = Math.abs(beta) - deadzone;
       if (betaExcess > 0) {
         const speedF = clamp(Math.abs(fwdSpeed) / 33.3, 0, 1); // 0..120kmh
@@ -574,12 +607,25 @@ export class CarController {
         const armed = this.launchArmed || this.launching;
         const powerOn = input.throttle > 0.15 && !armed;
         const authority = (steering ? lerp(0.9, 0.5, speedF) : 1) * (0.5 + P.assists.stabilityControl) *
-          (powerOn ? 0.7 : 1.35);
-        const esc = clamp(
-          (-Math.sign(beta) * betaExcess * 6000 - angvel.y * 1500) * authority,
-          -4000, 4000
-        );
-        this.body.applyTorqueImpulse({ x: 0, y: esc * dt, z: 0 }, true);
+          (powerOn ? 1.0 : 1.35);
+        // plain opposing torque: bleeds the sideslip off
+        let esc = -Math.sign(beta) * betaExcess * 6000 - angvel.y * 1500;
+        // Countersteer assist. A real ESC does not just push against the
+        // slide — it builds the yaw moment the driver ASKED for, by braking
+        // individual wheels. Modelled as a yaw impulse that follows the steer
+        // input, scaled by how far past the deadzone we already are. This is
+        // what makes countersteer actually flick the car the other way
+        // instead of only unwinding the angle slowly.
+        //
+        // ONLY when the steer input opposes the slide. Keying off steer
+        // alone made the assist feed the slide it was supposed to be
+        // catching, which spun the car on entry.
+        const countersteering = Math.sign(input.steer) === -Math.sign(beta);
+        const intent = countersteering
+          ? input.steer * clamp(betaExcess / 0.1, 0, 1) * P.assists.countersteerAssist
+          : 0;
+        esc += intent;
+        this.body.applyTorqueImpulse({ x: 0, y: clamp(esc * authority, -6000, 6000) * dt, z: 0 }, true);
       }
     }
     if (groundedWheels === 0) {

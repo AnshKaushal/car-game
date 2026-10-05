@@ -38,8 +38,7 @@ const RAYS: Ray[] = Array.from({ length: RAY_COUNT }, (_, i) => ({
 // so the browser never has to repaint the overlay.
 const CSS = `
 .sl-root{position:absolute;inset:0;overflow:hidden;pointer-events:none;
-  contain:strict;opacity:0;will-change:opacity;
-  transform:scale(var(--sl-spread,1));transform-origin:50% 50%;}
+  contain:strict;opacity:0;will-change:opacity;}
 .sl-ray{position:absolute;left:50%;top:50%;height:${TRAVEL_TO + 8}vh;
   margin-left:calc(var(--w) / -2);width:var(--w);transform-origin:50% 0;
   background:linear-gradient(to bottom,rgba(255,255,255,0) 0%,rgba(255,255,255,.42) 42%,rgba(255,255,255,0) 100%);
