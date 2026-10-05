@@ -20,6 +20,75 @@ export function roadYaw(s: number): number {
   return Math.atan2(dx, 1);
 }
 
+/** Number of cross-sections sampled along each road ribbon. */
+const RIB_DIV = 16;
+
+/**
+ * Build a ribbon mesh whose spine is the road centerline.
+ *
+ * Topology is fixed (RIB_DIV cross-sections x 2 edge vertices) so the pooled
+ * segments can be rewritten in place as they recycle, without reallocating.
+ * Positions are left at zero until writeRibbon() fills them in.
+ */
+function makeRibbonGeometry(len: number, div: number, width: number, vRepeat: number): THREE.BufferGeometry {
+  const rows = div + 1;
+  const verts = rows * 2;
+  const pos = new Float32Array(verts * 3);
+  const uv = new Float32Array(verts * 2);
+  for (let j = 0; j < rows; j++) {
+    const v = (j / div) * vRepeat;
+    // left / right edge of this cross-section
+    uv[(j * 2) * 2 + 0] = 0; uv[(j * 2) * 2 + 1] = v;
+    uv[(j * 2 + 1) * 2 + 0] = 1; uv[(j * 2 + 1) * 2 + 1] = v;
+  }
+  const idx: number[] = [];
+  for (let j = 0; j < div; j++) {
+    const a = j * 2, b = j * 2 + 1, c = (j + 1) * 2, d = (j + 1) * 2 + 1;
+    // Counter-clockwise seen from ABOVE (+Y). The mirror ordering of this
+    // (a,c,b / b,c,d) makes every face normal point straight DOWN, which
+    // lights the road from underneath and renders it black.
+    idx.push(a, b, c, b, d, c);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  void len; void width;
+  return geo;
+}
+
+/**
+ * Rewrite a ribbon's vertices to follow roadCenterX over [s0, s0+len].
+ *
+ * The edges are offset along the true normal of the centerline, so the road
+ * keeps a constant width through curves instead of pinching. y is left at 0;
+ * the mesh's own position supplies the 0.02 lift off the physics ground.
+ */
+function writeRibbon(geo: THREE.BufferGeometry, s0: number, len: number, div: number, width: number) {
+  const pos = geo.getAttribute('position') as THREE.BufferAttribute;
+  const half = width / 2;
+  for (let j = 0; j <= div; j++) {
+    const s = s0 + (len * j) / div;
+    const cx = roadCenterX(s);
+    // numerical tangent of the centerline at s
+    const h = 0.5;
+    const tx = (roadCenterX(s + h) - roadCenterX(s - h)) / (2 * h);
+    // forward is (tx, -1) in xz; its right-hand normal in the xz plane is
+    // perpendicular, pointing to the driver's right
+    const inv = 1 / Math.hypot(tx, 1);
+    const nx = inv;      // normal.x
+    const nz = -tx * inv; // normal.z
+    const z = -s;
+    const l = j * 2, r = j * 2 + 1;
+    pos.setXYZ(l, cx - nx * half, 0, z - nz * half);
+    pos.setXYZ(r, cx + nx * half, 0, z + nz * half);
+  }
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+  geo.computeBoundingSphere();
+}
+
 function makeAsphaltTexture(): THREE.CanvasTexture {
   const c = document.createElement('canvas');
   c.width = 256; c.height = 256;
@@ -85,6 +154,7 @@ export class WorldManager {
   private hills: Hill[] = [];
   private readonly SEG_BEHIND = 4; // 200m behind
   private readonly SEG_AHEAD = 24; // 1200m ahead (past fog far — spawns hidden)
+  private readonly ROAD_RIB = RIB_DIV;
   private loader = new GLTFLoader();
 
   async init(scene: THREE.Scene, baseUrl: string) {
@@ -133,16 +203,27 @@ export class WorldManager {
     // road pool
     const tex = makeAsphaltTexture();
     const count = W.road.segmentsAhead + W.road.segmentsBehind;
-    // build segments along -Z: segment i covers s in [i*segLen,(i+1)*segLen], position from roadCenterX at mid
+    // Each segment is a CURVED ribbon that follows roadCenterX() exactly.
+    //
+    // These used to be flat PlaneGeometry tiles positioned at roadCenterX(mid)
+    // and rotated to roadYaw(mid). On a curve the tangent at the midpoint is
+    // not the tangent at the ends, so neighbouring tiles met at a slight angle
+    // and opened a visible wedge of bare ground across the carriageway every
+    // segmentLength. Sampling the centerline per vertex removes the seams
+    // entirely, and neighbouring segments share the boundary samples so they
+    // are watertight rather than merely overlapping.
     const roadMat = new THREE.MeshStandardMaterial({ map: tex.clone(), roughness: 0.95 });
+    this.roadSegs = [];
     for (let i = 0; i < count; i++) {
-      const geo = new THREE.PlaneGeometry(W.road.width, this.segLen + 2.5, 1, 6);
+      const geo = makeRibbonGeometry(this.segLen, this.ROAD_RIB, W.road.width, this.segLen / 14);
       const m = new THREE.Mesh(geo, roadMat.clone());
       m.material.map = tex.clone();
-      m.material.map!.repeat.set(1, this.segLen / 14);
+      m.material.map!.repeat.set(1, 1);
       m.material.map!.needsUpdate = true;
-      m.rotation.x = -Math.PI / 2;
       m.receiveShadow = true;
+      // geometry is written in world space per recycle, so the mesh itself
+      // sits at the origin and culling has to be done off the bounding volume
+      m.frustumCulled = false;
       this.group.add(m);
       this.roadSegs.push({ mesh: m, s0: -999999 });
     }
@@ -338,10 +419,8 @@ export class WorldManager {
       const seg = this.roadSegs[i];
       if (seg.s0 === s0) continue;
       seg.s0 = s0;
-      const mid = s0 + this.segLen / 2;
-      const cx = roadCenterX(mid);
-      seg.mesh.position.set(cx, 0.02, -mid);
-      seg.mesh.rotation.z = -roadYaw(mid);
+      writeRibbon(seg.mesh.geometry as THREE.BufferGeometry, s0, this.segLen, this.ROAD_RIB, W.road.width);
+      seg.mesh.position.set(0, 0.02, 0);
     }
     // ground follows (snapped to reduce shimmer)
     this.ground.position.x = Math.round(carPos.x / 8) * 8;

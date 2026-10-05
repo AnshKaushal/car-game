@@ -55,7 +55,7 @@ function Dial({ title, unit, maxLabel, redFrom, children, refs }: {
   const tip = polar(CX, CY, CR - 8, 0);
   const tail = polar(CX, CY, 11, 180);
   return (
-    <svg width="200" height="140" viewBox="0 0 200 140">
+    <svg width="158" height="111" viewBox="0 0 200 140">
       <path d={`M ${r0.x} ${r0.y} A ${CR - 2} ${CR - 2} 0 0 1 ${r1.x} ${r1.y}`} fill="none"
         stroke="#ef2b2b" strokeWidth="5" opacity="0.9" />
       {ticks}
@@ -128,18 +128,20 @@ export default function Dashboard({ tele }: { tele: CarTelemetry }) {
         </div>
       )}
 
-      {/* bottom-center cluster: speed | gear | tacho */}
-      <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-stretch gap-3">
-        <div className="rounded-2xl bg-zinc-950/70 backdrop-blur border border-white/10 px-2 py-1.5 shadow-2xl">
+      {/* bottom-center cluster: speed | gear | tacho.
+          Kept deliberately small and pushed into the corners: at full size it
+          overlapped the car and hid the lower half of the body. */}
+      <div className="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-stretch gap-2">
+        <div className="rounded-2xl bg-zinc-950/70 backdrop-blur border border-white/10 px-1.5 py-1 shadow-2xl">
           <Dial title="SPEED" unit="KM/H" maxLabel={MAX_KMH} redFrom={2} refs={{ needleRef: spdNeedle, numRef: spdNum }}>
             <></>
           </Dial>
         </div>
 
         {/* center: current gear only */}
-        <div className="flex w-28 flex-col items-center justify-center gap-1.5 rounded-2xl bg-zinc-950/70 backdrop-blur border border-white/10 px-2 py-2 shadow-2xl">
+        <div className="flex w-[74px] flex-col items-center justify-center gap-1 rounded-2xl bg-zinc-950/70 backdrop-blur border border-white/10 px-1.5 py-1.5 shadow-2xl">
           <div
-            className={`flex h-20 w-20 items-center justify-center rounded-xl border-2 text-5xl font-black
+            className={`flex h-14 w-14 items-center justify-center rounded-lg border-2 text-4xl font-black
               ${tele.gearLabel === 'R' ? 'border-red-500 bg-red-950/60 text-red-400'
                 : tele.gearLabel === 'N' ? 'border-amber-500 bg-amber-950/60 text-amber-400'
                 : 'border-emerald-500/70 bg-emerald-950/60 text-emerald-300'}`}
@@ -157,7 +159,7 @@ export default function Dashboard({ tele }: { tele: CarTelemetry }) {
           </div>
         </div>
 
-        <div className="rounded-2xl bg-zinc-950/70 backdrop-blur border border-white/10 px-2 py-1.5 shadow-2xl">
+        <div className="rounded-2xl bg-zinc-950/70 backdrop-blur border border-white/10 px-1.5 py-1 shadow-2xl">
           <Dial title="RPM" unit="X1000" maxLabel={8} redFrom={REDLINE / MAX_RPM} refs={{ needleRef: rpmNeedle, numRef: rpmNum }}>
             <></>
           </Dial>

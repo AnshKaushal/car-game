@@ -152,7 +152,9 @@ export default function App() {
         // accumulated mouse movement since the last frame
         const e0 = { lastMovementX: 0, lastMovementY: 0 };
         let mouseLocked = false;
-        let cursorHidden = false;
+        // pointer-lock bookkeeping: "want it" / "asked for it" / retry timer
+        let lockWanted = false;
+        let lockRetry = 0;
         const dom = renderer!.domElement;
 
         /**
@@ -164,27 +166,88 @@ export default function App() {
          * it; a click anywhere re-hides and re-locks.
          */
         const hideCursor = () => {
-          cursorHidden = true;
           document.documentElement.style.cursor = 'none';
           document.body.style.cursor = 'none';
-          // Only DOM pointer lock can actually stop the OS cursor from
-          // reaching the title bar. requestPointerLock is always called from
-          // inside a user-gesture handler (click / Enter / START button) —
-          // never from a plain pointermove, which browsers reject.
-          try { dom.requestPointerLock?.(); } catch { /* unsupported */ }
+          tryLock();
+        };
+        /**
+         * Request pointer lock, robustly.
+         *
+         * The old code called requestPointerLock() inside a try/catch and
+         * nothing else, which silently loses two distinct failure modes:
+         *  - the modern API returns a PROMISE that REJECTS (rather than
+         *    throwing) when the browser refuses — e.g. because the call came
+         *    from a plain pointermove instead of a real gesture. Nothing
+         *    observed the rejection, so the game ran on with the CSS cursor
+         *    hidden while the OS cursor was still free to leave the window.
+         *  - re-locking immediately after Esc is rate-limited by the browser
+         *    for about a second, which needs a delayed retry, not one shot.
+         * So: observe the promise, and retry on a backoff until the lock is
+         * genuinely held. lockWanted separates "we want it" from "we have it"
+         * so the retry chain stops the moment it succeeds.
+         */
+        const tryLock = () => {
+          if (!startedRef.current || lockWanted) return;
+          lockWanted = true;
+          const el = dom as any;
+          if (!el.requestPointerLock) { lockWanted = false; return; }
+          let p: unknown;
+          try {
+            // unadjustedMovement bypasses OS mouse acceleration, which is what
+            // makes a locked camera feel inconsistent between machines. Not
+            // universally supported, hence the fallback.
+            try { p = el.requestPointerLock({ unadjustedMovement: true }); }
+            catch { p = el.requestPointerLock(); }
+          } catch {
+            lockWanted = false;
+            return;
+          }
+          const fail = () => {
+            lockWanted = false;
+            if (lockRetry) return;
+            lockRetry = window.setTimeout(() => { lockRetry = 0; tryLock(); }, 350);
+          };
+          if (p && typeof (p as Promise<void>).catch === 'function') {
+            (p as Promise<void>).catch(fail);
+          } else {
+            // Legacy void-returning API: verify on the next tick instead.
+            window.setTimeout(() => {
+              if (lockWanted && document.pointerLockElement !== dom) fail();
+            }, 120);
+          }
         };
         const showCursor = () => {
-          cursorHidden = false;
           document.documentElement.style.cursor = '';
           document.body.style.cursor = '';
+          if (lockRetry) { window.clearTimeout(lockRetry); lockRetry = 0; }
+          lockWanted = false;
           if (document.pointerLockElement) document.exitPointerLock?.();
         };
-        // If the browser drops the lock (Esc, focus loss, tab switch) or the
-        // cursor is ever restored, re-hide + re-request on the next move.
+        /**
+         * Re-acquire the lock if the browser dropped it (Esc, focus loss, tab
+         * switch) or if it was never granted in the first place.
+         *
+         * CSS cursor:none alone is NOT enough — it only hides the cursor drawn
+         * inside the page. The OS cursor can still travel out of the window and
+         * onto the title bar, which is what "mouse moves out of the screen"
+         * means. Only pointer lock prevents that.
+         *
+         * NOTE: we deliberately do NOT retry from inside this handler. A
+         * pointermove is not a user gesture, so the request would be rejected
+         * and, worse, could burn the browser's rate-limit budget. We flag that
+         * a retry is needed and let the next genuine gesture (pointerdown /
+         * keydown) perform it.
+         */
         const onForceHide = () => {
-          if (startedRef.current && !cursorHidden && !document.pointerLockElement) hideCursor();
+          if (startedRef.current && !document.pointerLockElement) lockWanted = false;
+        };
+        // Any real gesture is a valid moment to (re)request the lock.
+        const onGesture = () => {
+          if (startedRef.current && !document.pointerLockElement) tryLock();
         };
         document.addEventListener('pointermove', onForceHide);
+        document.addEventListener('pointerdown', onGesture);
+        document.addEventListener('keydown', onGesture);
         document.addEventListener('pointerlockerror', onForceHide);
         const onPointerDown = (e: PointerEvent) => {
           // click = re-hide the cursor and recapture (after Esc, after focus loss)
@@ -218,6 +281,15 @@ export default function App() {
         const onPointerUp = () => { orbiting = false; };
         const onLockChange = () => {
           mouseLocked = document.pointerLockElement === dom;
+          // Holding the lock satisfies the pending request — stop retrying.
+          if (mouseLocked) {
+            lockWanted = false;
+            if (lockRetry) { window.clearTimeout(lockRetry); lockRetry = 0; }
+          } else {
+            // Dropped (Esc / focus loss). Allow a fresh request from the next
+            // genuine gesture rather than hammering a rate-limited API.
+            lockWanted = false;
+          }
           setLockHint(startedRef.current && !mouseLocked);
         };
         dom.addEventListener('pointerdown', onPointerDown);
@@ -311,8 +383,12 @@ export default function App() {
           const orbitQ = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), camYaw);
           const viewDir = smoothFwd.clone().applyQuaternion(orbitQ);
           viewDir.y = 0; viewDir.normalize();
-          const dist = chaseFar ? 6.5 : 4.2;
-          const height = (chaseFar ? 2.6 : 1.9) + camPitch * 5;
+          // Ride height. Was 6.5m back / 2.6m up, which looked down on the roof and
+          // pushed the car down into the dashboard. Lowered to just above roof
+          // height and pulled slightly closer, so the horizon sits high and the
+          // car reads against the road ahead instead of the cluster.
+          const dist = chaseFar ? 5.5 : 4.3;
+          const height = (chaseFar ? 1.62 : 1.42) + camPitch * 5;
           const desired = carPos.clone().addScaledVector(viewDir, -dist).add(new THREE.Vector3(0, height, 0));
           camPos.copy(desired);
 
@@ -347,7 +423,9 @@ export default function App() {
           camLook.copy(carPos).addScaledVector(smoothFwd, lookAheadSm);
           // raise the aim point as the camera rises, so a high side-on view
           // doesn't drop the car to the bottom of the frame
-          camLook.y += 1.1 + Math.max(0, camPitch) * 1.8;
+          // Aim at roughly the car's roof height. Aiming any lower tips the camera down
+          // and slides the car further down the frame, into the cluster.
+          camLook.y += 1.02 + Math.max(0, camPitch) * 1.8;
           camera.position.copy(camPos);
           camera.lookAt(camLook);
 
@@ -380,6 +458,12 @@ export default function App() {
           document.removeEventListener('pointerlockerror', onForceHide);
           document.removeEventListener('pointerlockchange', onLockChange);
           input.detach();
+          if (lockRetry) window.clearTimeout(lockRetry);
+          document.removeEventListener('pointermove', onForceHide);
+          document.removeEventListener('pointerdown', onGesture);
+          document.removeEventListener('keydown', onGesture);
+          document.removeEventListener('pointerlockerror', onForceHide);
+          document.removeEventListener('pointerlockchange', onLockChange);
           world.free();
         };
       } catch (e: any) {
