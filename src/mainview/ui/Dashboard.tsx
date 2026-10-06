@@ -1,8 +1,17 @@
 import React, { useEffect, useRef } from 'react';
 import type { CarTelemetry } from '../systems/CarController';
-import { CAR_PHYSICS } from '../constants/physics';
 
-const REDLINE = CAR_PHYSICS.engine.redlineRPM;
+/**
+ * The dial's red band starts BELOW the hard fuel-cut rev limiter.
+ *
+ * `redlineRPM` (7500) is where the ECU actually cuts fuel, but on a gauge that
+ * tops out at 8000 that only paints the last 1/16th of the sweep, which reads as
+ * a sliver rather than a redline. Painting from 7000 instead marks the last
+ * 1000rpm — the band a driver is being warned off — and 7500 still falls inside
+ * it, so the needle goes red slightly before the limiter bites. Presentation
+ * only: the limiter's behaviour in CarController is unchanged.
+ */
+const RED_FROM_RPM = 7000;
 const MAX_RPM = 8000;
 const MAX_KMH = 340;
 
@@ -97,14 +106,14 @@ export default function Dashboard({ tele }: { tele: CarTelemetry }) {
       if (rpmNeedle.current) {
         rpmNeedle.current.setAttribute('transform', `rotate(${angleFor(dRpm / MAX_RPM)} 100 96)`);
         const line = rpmNeedle.current.querySelector('line');
-        if (line) line.setAttribute('stroke', dRpm >= REDLINE ? '#ff3b3b' : '#ffcf3b');
+        if (line) line.setAttribute('stroke', dRpm >= RED_FROM_RPM ? '#ff3b3b' : '#ffcf3b');
       }
       if (spdNeedle.current) {
         spdNeedle.current.setAttribute('transform', `rotate(${angleFor(dKmh / MAX_KMH)} 100 96)`);
       }
       if (rpmNum.current) {
         rpmNum.current.textContent = (dRpm / 1000).toFixed(1);
-        rpmNum.current.setAttribute('fill', dRpm >= REDLINE ? '#ff5b5b' : '#fff');
+        rpmNum.current.setAttribute('fill', dRpm >= RED_FROM_RPM ? '#ff5b5b' : '#fff');
       }
       if (spdNum.current) spdNum.current.textContent = String(Math.round(dKmh));
     };
@@ -160,7 +169,7 @@ export default function Dashboard({ tele }: { tele: CarTelemetry }) {
         </div>
 
         <div className="rounded-2xl bg-zinc-950/70 backdrop-blur border border-white/10 px-1.5 py-1 shadow-2xl">
-          <Dial title="RPM" unit="X1000" maxLabel={8} redFrom={REDLINE / MAX_RPM} refs={{ needleRef: rpmNeedle, numRef: rpmNum }}>
+          <Dial title="RPM" unit="X1000" maxLabel={8} redFrom={RED_FROM_RPM / MAX_RPM} refs={{ needleRef: rpmNeedle, numRef: rpmNum }}>
             <></>
           </Dial>
         </div>

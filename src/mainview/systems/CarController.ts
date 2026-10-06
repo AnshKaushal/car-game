@@ -215,14 +215,28 @@ export class CarController {
 
     let targetRpm: number;
     if (this.gear === 0) {
-      // Neutral: free rev. Blips up fast on throttle, then winds down SLOW
-      // (flywheel inertia + neutral idle control, not a linear decay).
+      // Neutral: free rev. Blips up fast on throttle, then winds back down to
+      // idle on its own (flywheel inertia + neutral idle control).
       targetRpm = P.engine.idleRPM + input.throttle * (P.engine.redlineRPM - P.engine.idleRPM) * 0.9;
-      // spin-down is proportional to the rpm above idle, so the needle eases
-      // down through the midrange and only settles in the last second
-      const excess = Math.max(0, this.rpm - P.engine.idleRPM);
-      const windDown = (0.25 + 0.55 * Math.min(1, excess / 3500)) * dt;
-      this.rpm += (targetRpm > this.rpm ? (targetRpm - this.rpm) * Math.min(1, dt * 5.0) : -windDown);
+      if (targetRpm > this.rpm) {
+        this.rpm += (targetRpm - this.rpm) * Math.min(1, dt * 5.0);
+      } else {
+        // EXPONENTIAL decay of the rpm ABOVE idle, with a decay rate that rises
+        // with rpm: lots of stored energy (and lots of friction power) up high,
+        // so a big blip falls faster than a small one, then everything eases
+        // into idle. Keeps the intended flyweight feel — a full 6800rpm blip
+        // takes ~2.5s to settle, and you can see it coast.
+        //
+        // This was previously an ABSOLUTE decrement (a flat -0.25..-0.8 rpm per
+        // frame) that was not tied to how far the needle still had to travel:
+        // from a 6800rpm blip it would have needed ~hours to reach idle, so
+        // letting go of the throttle in N left the needle pinned high. Decaying
+        // the EXCESS is the fix — the distance to close now shrinks with the
+        // distance remaining, so it always converges.
+        const excess = Math.max(0, this.rpm - P.engine.idleRPM);
+        const decay = 1.2 + 1.3 * Math.min(1, excess / 3500);
+        this.rpm = P.engine.idleRPM + excess * Math.exp(-decay * dt);
+      }
     } else {
       const coupled = Math.abs(rollingOmega * gearRatio * 60 / (2 * Math.PI));
       // blend wheel-coupled rpm with throttle influence & clutch slip at low speed
