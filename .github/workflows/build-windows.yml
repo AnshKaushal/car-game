@@ -1,0 +1,33 @@
+name: Build Windows
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-2025
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Hutch
+        shell: pwsh
+        run: |
+          & ([scriptblock]::Create((irm https://hutch.blackboard.sh/hutch/install.ps1)))
+
+      - name: Verify Hutch
+        run: hutch --version
+
+      - name: Install dependencies
+        run: hutch run install
+
+      - name: Build Windows app
+        run: hutch electrobun build --env=stable
+
+      - name: Upload Windows build
+        uses: actions/upload-artifact@v6
+        with:
+          name: car-game-windows
+          path: artifacts/*
+          if-no-files-found: error
