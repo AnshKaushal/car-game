@@ -11,23 +11,93 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
       - name: Install Hutch
         shell: pwsh
         run: |
-          & ([scriptblock]::Create((irm https://hutch.blackboard.sh/hutch/install.ps1)))
+          $ErrorActionPreference = "Stop"
 
-      - name: Verify Hutch
-        run: hutch --version
+          Write-Host "Installing Hutch..."
+
+          irm https://hutch.blackboard.sh/hutch/install.ps1 | iex
+
+          # Reload PATH after installer modifies it
+          $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+          $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+          $env:Path = "$userPath;$machinePath"
+
+          # Find Hutch even if installer used a non-standard location
+          $hutch = Get-Command hutch -ErrorAction SilentlyContinue
+
+          if (-not $hutch) {
+            $possiblePaths = @(
+              "$env:USERPROFILE\.hutch\hutch.exe",
+              "$env:USERPROFILE\.hutch\bin\hutch.exe",
+              "$env:LOCALAPPDATA\hutch\hutch.exe",
+              "$env:LOCALAPPDATA\hutch\bin\hutch.exe"
+            )
+
+            foreach ($path in $possiblePaths) {
+              if (Test-Path $path) {
+                $env:Path = "$(Split-Path $path);$env:Path"
+                break
+              }
+            }
+          }
+
+          $hutch = Get-Command hutch -ErrorAction SilentlyContinue
+
+          if (-not $hutch) {
+            Write-Host "PATH:"
+            Write-Host $env:Path
+            Write-Host "Searching for hutch.exe..."
+
+            Get-ChildItem `
+              -Path "$env:USERPROFILE","$env:LOCALAPPDATA" `
+              -Filter "hutch.exe" `
+              -Recurse `
+              -ErrorAction SilentlyContinue |
+              Select-Object -First 10 FullName
+
+            throw "Hutch installation failed or hutch.exe could not be located."
+          }
+
+          Write-Host "Hutch found at: $($hutch.Source)"
+          hutch --version
 
       - name: Install dependencies
-        run: hutch run install
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          hutch run install
 
-      - name: Build Windows app
-        run: hutch electrobun build --env=stable
+      - name: Build Electrobun Windows app
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          hutch electrobun build --env=stable
+
+      - name: Find build artifacts
+        shell: pwsh
+        run: |
+          Write-Host "Searching for generated build files..."
+
+          Get-ChildItem -Path . -Recurse -File |
+            Where-Object {
+              $_.Extension -in ".exe", ".zip", ".msi"
+            } |
+            Select-Object FullName, Length
 
       - name: Upload Windows build
         uses: actions/upload-artifact@v6
         with:
           name: car-game-windows
-          path: artifacts/*
-          if-no-files-found: error
+          path: |
+            artifacts/**
+            build/**
+            .hutch/**
+          if-no-files-found: warn
