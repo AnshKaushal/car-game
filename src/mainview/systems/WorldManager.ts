@@ -9,19 +9,16 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import type * as RAPIER from '@dimforge/rapier3d-compat';
 import { WORLD_CONFIG } from '../constants/world';
-import {
-  roadCenterX as centerX, roadElevation, roadBank, roadYaw as yaw, terrainHeight,
-} from './road';
 
-// Single source of truth lives in ./road (shared with vehicle physics).
-// Re-exported here so existing import sites keep working.
 export function roadCenterX(s: number): number {
-  return centerX(s);
+  // gentle endless curves: sum of sines (deterministic)
+  return Math.sin(s * 0.004) * 60 + Math.sin(s * 0.0013 + 1.7) * 120;
 }
 export function roadYaw(s: number): number {
-  return yaw(s);
+  const dx = (roadCenterX(s + 4) - roadCenterX(s - 4)) / 8; // dx/ds
+  // forward is -Z... path direction: (dx, -1) in xz; yaw = atan2(dx, 1)? three yaw around Y, 0 = -Z
+  return Math.atan2(dx, 1);
 }
-export { roadElevation, roadBank };
 
 /** Number of cross-sections sampled along each road ribbon. */
 const RIB_DIV = 16;
@@ -62,34 +59,30 @@ function makeRibbonGeometry(len: number, div: number, width: number, vRepeat: nu
 }
 
 /**
- * Rewrite a ribbon's vertices to follow the shared road definition over
- * [s0, s0+len]. Edges are offset along the true normal of the centerline
- * (constant width through curves); y follows roadElevation and the
- * cross-section rolls with roadBank — the SAME functions the vehicle physics
- * samples, so visual and physical roads always agree.
+ * Rewrite a ribbon's vertices to follow roadCenterX over [s0, s0+len].
+ *
+ * The edges are offset along the true normal of the centerline, so the road
+ * keeps a constant width through curves instead of pinching. y is left at 0;
+ * the mesh's own position supplies the 0.02 lift off the physics ground.
  */
 function writeRibbon(geo: THREE.BufferGeometry, s0: number, len: number, div: number, width: number) {
   const pos = geo.getAttribute('position') as THREE.BufferAttribute;
   const half = width / 2;
   for (let j = 0; j <= div; j++) {
     const s = s0 + (len * j) / div;
-    const cx = centerX(s);
+    const cx = roadCenterX(s);
     // numerical tangent of the centerline at s
     const h = 0.5;
-    const tx = (centerX(s + h) - centerX(s - h)) / (2 * h);
+    const tx = (roadCenterX(s + h) - roadCenterX(s - h)) / (2 * h);
     // forward is (tx, -1) in xz; its right-hand normal in the xz plane is
     // perpendicular, pointing to the driver's right
     const inv = 1 / Math.hypot(tx, 1);
     const nx = inv;      // normal.x
     const nz = -tx * inv; // normal.z
     const z = -s;
-    const y = roadElevation(s);
-    const bank = roadBank(s);
-    // bank rolls the cross-section: right edge rises with positive bank
-    const lift = Math.sin(bank) * half;
     const l = j * 2, r = j * 2 + 1;
-    pos.setXYZ(l, cx - nx * half, y - lift, z - nz * half);
-    pos.setXYZ(r, cx + nx * half, y + lift, z + nz * half);
+    pos.setXYZ(l, cx - nx * half, 0, z - nz * half);
+    pos.setXYZ(r, cx + nx * half, 0, z + nz * half);
   }
   pos.needsUpdate = true;
   geo.computeVertexNormals();
@@ -340,7 +333,7 @@ export class WorldManager {
     const h = (hill.mesh.geometry as THREE.ConeGeometry).parameters.height;
     hill.mesh.position.set(
       cx + side * lateral,
-      terrainHeight(sMid) + h / 2 - 4,
+      h / 2 - 4,
       -(sMid + (this.rand(seg * 17 + 3) - 0.5) * this.segLen)
     );
   }
@@ -359,7 +352,7 @@ export class WorldManager {
         const side = this.rand(seed * 7 + i * 131) > 0.5 ? 1 : -1;
         const dist = W.minDistanceFromRoad + this.rand(seed + i * 17) * (W.maxDistanceFromRoad - W.minDistanceFromRoad);
         out.push({
-          pos: new THREE.Vector3(cx + side * dist, terrainHeight(s) - 0.1, -(s + (this.rand(seed * 13 + i) - 0.5) * 10)),
+          pos: new THREE.Vector3(cx + side * dist, 0, -(s + (this.rand(seed * 13 + i) - 0.5) * 10)),
           rot: this.rand(seed + i) * Math.PI * 2,
           scale: (W.scaleRange.min + this.rand(seed * 3 + i * 7) * (W.scaleRange.max - W.scaleRange.min)) * 1.6,
           variant: Math.floor(this.rand(seed * 29 + i * 5) * nVar) % nVar,
@@ -429,11 +422,9 @@ export class WorldManager {
       writeRibbon(seg.mesh.geometry as THREE.BufferGeometry, s0, this.segLen, this.ROAD_RIB, W.road.width);
       seg.mesh.position.set(0, 0.02, 0);
     }
-    // ground follows (snapped to reduce shimmer), riding the terrain height
-    // so the visuals match the physics surface the tires sample
+    // ground follows (snapped to reduce shimmer)
     this.ground.position.x = Math.round(carPos.x / 8) * 8;
     this.ground.position.z = Math.round(carPos.z / 8) * 8;
-    this.ground.position.y = terrainHeight(carS) - 0.02;
     // sun follows for stable shadows
     const sun = (this.group as any)._sun as THREE.DirectionalLight | undefined;
     if (sun) {
