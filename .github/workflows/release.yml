@@ -1,0 +1,144 @@
+name: Build & Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# One release at a time, so two dispatches can't race for the same version.
+concurrency:
+  group: build-and-release
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Compute next version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+      tag: ${{ steps.bump.outputs.tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0 # tags are needed to work out the next version
+
+      - name: Bump latest vX.Y.Z tag by one patch
+        id: bump
+        run: |
+          latest="$(git tag --list 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1 || true)"
+          if [ -n "$latest" ]; then
+            next="$(echo "$latest" | awk -F. '{print $1 "." $2 "." $3+1}')"
+          else
+            next="v1.0.0"
+          fi
+          echo "Latest tag: ${latest:-<none>}"
+          echo "Next version: $next"
+          echo "tag=$next" >> "$GITHUB_OUTPUT"
+          echo "version=${next#v}" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build (${{ matrix.label }})
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: macOS
+            id: macos
+            runner: macos-latest
+          - label: Windows
+            id: windows
+            runner: windows-2025
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Hutch (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          installer="$RUNNER_TEMP/install-hutch.sh"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+            https://hutch.blackboard.sh/hutch/install.sh --output "$installer"
+          sh "$installer" --channel production --no-modify-path
+          echo "$HOME/.hutch/bin" >> "$GITHUB_PATH"
+
+      - name: Install Hutch (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $script = irm https://hutch.blackboard.sh/hutch/install.ps1
+          & ([scriptblock]::Create($script))
+          $hutchDir = "$env:USERPROFILE\.hutch\bin"
+          if (!(Test-Path "$hutchDir\hutch.exe")) {
+            throw "Hutch was installed but could not be found at $hutchDir\hutch.exe"
+          }
+          $hutchDir | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Install dependencies
+        shell: bash
+        run: hutch run install
+
+      - name: Stamp the release version
+        shell: bash
+        run: node scripts/set-version.mjs "${{ needs.version.outputs.version }}"
+
+      - name: Build (stable channel)
+        shell: bash
+        run: hutch run build
+
+      - name: Name the installers after the version
+        shell: bash
+        run: |
+          cd artifacts
+          for f in macos-arm64-*.dmg; do
+            [ -e "$f" ] || continue
+            mv "$f" "Car-Game-${{ needs.version.outputs.version }}-macOS-ARM64.dmg"
+          done
+          for f in win-x64-*-Setup.zip; do
+            [ -e "$f" ] || continue
+            mv "$f" "Car-Game-${{ needs.version.outputs.version }}-Windows-x64-Setup.zip"
+          done
+          ls -la
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: release-${{ matrix.id }}
+          path: artifacts/**
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub release
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download both platforms' artifacts
+        uses: actions/download-artifact@v7
+        with:
+          pattern: release-*
+          path: release-artifacts
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          mapfile -t files < <(find release-artifacts -type f | sort)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::No build artifacts found to release"
+            exit 1
+          fi
+          printf 'Publishing:\n%s\n' "${files[@]}"
+          gh release create "$TAG" "${files[@]}" \
+            --target "$GITHUB_SHA" \
+            --title "Car Game $VERSION" \
+            --generate-notes
