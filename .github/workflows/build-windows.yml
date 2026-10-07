@@ -70,7 +70,7 @@ jobs:
       - name: Upload Windows build
         uses: actions/upload-artifact@v6
         with:
-          name: car-game-windows
+          name: oversteer-windows
           path: |
             artifacts/**
             build/**

@@ -2,8 +2,8 @@ import type { ElectrobunConfig } from "electrobun"
 
 export default {
   app: {
-    name: "Car Game",
-    identifier: "car.game.dev",
+    name: "OverSteer",
+    identifier: "dev.oversteer.game",
     version: "1.0",
   },
   build: {
@@ -14,16 +14,20 @@ export default {
     copy: {
       "dist/index.html": "views/mainview/index.html",
       "dist/assets": "views/mainview/assets",
+      "dist/icon.png": "views/mainview/icon.png",
     },
     watchIgnore: ["dist/**"],
     mac: {
       bundleCEF: false,
+      icons: "icon.iconset",
     },
     linux: {
       bundleCEF: false,
+      icon: "src/mainview/public/icon.png",
     },
     win: {
       bundleCEF: false,
+      icon: "src/mainview/public/icon.png",
     },
   },
 } satisfies ElectrobunConfig

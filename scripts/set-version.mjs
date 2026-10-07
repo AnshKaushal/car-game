@@ -8,23 +8,30 @@
  * number. Nothing written here is committed back.
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs"
 
-const version = process.argv[2];
+const version = process.argv[2]
 
 if (!/^\d+\.\d+\.\d+$/.test(version ?? "")) {
-	console.error(`set-version: expected a version like 1.0.1, got "${version ?? ""}"`);
-	process.exit(1);
+  console.error(
+    `set-version: expected a version like 1.0.1, got "${version ?? ""}"`,
+  )
+  process.exit(1)
 }
 
-const path = "electrobun.config.ts";
-const source = readFileSync(path, "utf8");
-const pattern = /(identifier:\s*"car\.game\.dev",\s*version:\s*)"[^"]*"/;
+const path = "electrobun.config.ts"
+const source = readFileSync(path, "utf8")
+const pattern = /(identifier:\s*"dev\.oversteer\.game",\s*version:\s*)"[^"]*"/
 
 if (!pattern.test(source)) {
-	console.error(`set-version: could not find app.version next to identifier in ${path}`);
-	process.exit(1);
+  console.error(
+    `set-version: could not find app.version next to identifier in ${path}`,
+  )
+  process.exit(1)
 }
 
-writeFileSync(path, source.replace(pattern, (_, prefix) => `${prefix}"${version}"`));
-console.log(`${path}: app.version -> ${version}`);
+writeFileSync(
+  path,
+  source.replace(pattern, (_, prefix) => `${prefix}"${version}"`),
+)
+console.log(`${path}: app.version -> ${version}`)

@@ -97,11 +97,11 @@ jobs:
           cd artifacts
           for f in macos-arm64-*.dmg; do
             [ -e "$f" ] || continue
-            mv "$f" "Car-Game-${{ needs.version.outputs.version }}-macOS-ARM64.dmg"
+            mv "$f" "OverSteer-${{ needs.version.outputs.version }}-macOS-ARM64.dmg"
           done
           for f in win-x64-*-Setup.zip; do
             [ -e "$f" ] || continue
-            mv "$f" "Car-Game-${{ needs.version.outputs.version }}-Windows-x64-Setup.zip"
+            mv "$f" "OverSteer-${{ needs.version.outputs.version }}-Windows-x64-Setup.zip"
           done
           ls -la
 
@@ -140,5 +140,5 @@ jobs:
           printf 'Publishing:\n%s\n' "${files[@]}"
           gh release create "$TAG" "${files[@]}" \
             --target "$GITHUB_SHA" \
-            --title "Car Game $VERSION" \
+            --title "OverSteer $VERSION" \
             --generate-notes

@@ -22,7 +22,7 @@ async function getMainViewUrl(): Promise<string> {
 const url = await getMainViewUrl()
 
 const mainWindow = new BrowserWindow({
-  title: "Car Game",
+  title: "OverSteer",
   url,
   frame: {
     width: 900,
@@ -30,4 +30,21 @@ const mainWindow = new BrowserWindow({
   },
 })
 
-console.log("Car game started!")
+mainWindow.setFullScreen(true)
+
+let lastRefullscreen = 0
+setInterval(() => {
+  let full = true
+  try {
+    full = mainWindow.isFullScreen()
+  } catch {
+    return
+  }
+  if (full || Date.now() - lastRefullscreen < 2000) return
+  lastRefullscreen = Date.now()
+  try {
+    mainWindow.setFullScreen(true)
+  } catch {}
+}, 500)
+
+console.log("OverSteer started!")

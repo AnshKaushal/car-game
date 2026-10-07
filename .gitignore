@@ -5,3 +5,5 @@ artifacts/
 .hutch/
 .cottontail-tmp/
 *.log
+graphify-out/
+.opencode
