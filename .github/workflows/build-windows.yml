@@ -51,7 +51,10 @@ jobs:
             throw "Hutch not found at $hutch"
           }
 
-          & $hutch electrobun build --env=stable
+          # Runs electrobun prepare && vite build && electrobun build --env=stable
+          # The vite build is required: dist/ is gitignored and electrobun.config.ts
+          # copies dist/index.html and dist/assets into the bundle.
+          & $hutch run build
 
       - name: Locate Windows build
         shell: pwsh
