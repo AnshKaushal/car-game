@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
-import { initPhysics, createWorld, createChassisBody, stepWorld, moveGroundBody } from './systems/PhysicsSystem';
+import { initPhysics, createWorld, createChassisBody, stepVehicle, moveGroundBody } from './systems/PhysicsSystem';
 import { CarController, type CarTelemetry } from './systems/CarController';
 import { WorldManager, roadCenterX, roadYaw } from './systems/WorldManager';
+import { roadElevation } from './systems/road';
 import { CarVisual } from './systems/CarVisual';
 import { TireSmoke } from './systems/TireSmoke';
 import { InputManager } from './systems/InputManager';
@@ -17,6 +18,10 @@ const initialTele: CarTelemetry = {
   throttle: 0, brake: 0, steer: 0, shifting: false,
   launchArmed: false, launching: false, parkingBrake: true,
   slipRatio: 0, drift: false,
+  yawRate: 0, latAccelG: 0, longAccelG: 0, engineTorque: 0,
+  frontAxleLoad: 0, rearAxleLoad: 0, downforceFront: 0, downforceRear: 0,
+  drag: 0, tcCut: 0, escActive: false, converterSlip: 1, clutch: 1,
+  wheels: [],
 };
 
 export default function App() {
@@ -138,6 +143,12 @@ export default function App() {
         // Smoothed look-ahead distance (metres along the car's heading). This
         // is a SCALAR, which is the whole point — see the camLook build below.
         let lookAheadSm = 6;
+        // Fixed-step accumulator: physics advances in exact 1/120s quanta no
+        // matter the render rate; visuals interpolate between physics states.
+        const H = CAR_PHYSICS.simulation.fixedDt;
+        let acc = 0;
+        const renderPos = new THREE.Vector3(startX, 0.72, 0);
+        const renderQuat = new THREE.Quaternion();
 
         // GTA-style free camera. The camera follows the CAR'S HEADING only,
         // never the cursor position or the direction of travel — moving the
@@ -321,18 +332,45 @@ export default function App() {
           if (inp.resetPressed) {
             const p = body.translation();
             const s = -p.z;
-            car.reset(new THREE.Vector3(roadCenterX(s), 0.72, p.z), roadYaw(s));
+            car.reset(new THREE.Vector3(roadCenterX(s), roadElevation(s) + 0.72, p.z), roadYaw(s));
+            acc = 0;
           }
 
-          const t = startedRef.current ? car.update(dt, inp) : null;
-          if (startedRef.current) stepWorld(world, dt);
+          // Fixed-step simulation with render interpolation. Edge-triggered
+          // inputs (shift/mode/camera) are consumed by the FIRST substep only
+          // so a 3-substep frame can't shift three gears.
+          let teleUpdate: CarTelemetry | null = null;
+          let alpha = 1;
+          if (startedRef.current) {
+            acc = Math.min(acc + dt, H * CAR_PHYSICS.simulation.maxSteps);
+            let n = 0;
+            let first = true;
+            while (acc >= H && n < CAR_PHYSICS.simulation.maxSteps) {
+              const sub = first ? inp : {
+                ...inp,
+                upshiftPressed: false, downshiftPressed: false,
+                toggleModePressed: false, toggleLaunchPressed: false,
+                resetPressed: false, toggleCameraPressed: false,
+                startPressed: false, escapePressed: false,
+              };
+              first = false;
+              stepVehicle(world, car, sub, H);
+              teleUpdate = car.buildTelemetryPublic(sub);
+              acc -= H;
+              n++;
+            }
+            alpha = acc / H;
+          }
+          const t = teleUpdate;
 
-          // sync visuals — front axle rolls at road speed, rear axle spins
-          // from measured slip so burnouts visibly smoke the tires
-          const bp = body.translation();
-          const carPos = new THREE.Vector3(bp.x, bp.y, bp.z);
-          moveGroundBody(groundBody, bp.x, bp.z); // keep physics ground under the car (endless world)
-          visual.syncFromBody(body, car.steerAngle, car.forwardSpeed / CAR_PHYSICS.wheels.radius, car.spinOmega, dt);
+          // sync visuals from the INTERPOLATED transform — front wheels roll at
+          // their own omega, rears spin from measured slip so burnouts smoke
+          car.getRenderTransform(alpha, renderPos, renderQuat);
+          const bp = { x: renderPos.x, y: renderPos.y, z: renderPos.z };
+          const carPos = new THREE.Vector3(renderPos.x, renderPos.y, renderPos.z);
+          // keep physics safety-net ground under the car (endless world + hills)
+          moveGroundBody(groundBody, bp.x, bp.z, bp.y - 2.0);
+          visual.syncSnapshot(renderPos, renderQuat, car.wheelSteer, car.wheelOmega, car.wheelCamber, dt);
           wm.update(-bp.z, carPos);
 
           // tire smoke: rear wheels on wheelspin/launch, all four while drifting

@@ -12,8 +12,7 @@ export const CAR_MODEL_YAW = Math.PI;
 export class CarVisual {
   group = new THREE.Group();
   wheels: { mesh: THREE.Object3D; front: boolean; left: boolean }[] = [];
-  private spinFront = 0; // rolling wheels (steered axle)
-  private spinRear = 0; // driven wheels (includes slip so burnouts visibly spin)
+  private spin = [0, 0, 0, 0]; // per-wheel spin accumulators (rad)
   private loader = new GLTFLoader();
 
   async load(baseUrl: string): Promise<void> {
@@ -137,13 +136,41 @@ export class CarVisual {
     this.group.position.set(t.x, t.y - 0.72, t.z);
     this.group.quaternion.set(r.x, r.y, r.z, r.w);
 
-    this.spinFront -= rollOmega * dt;
-    this.spinRear -= spinOmega * dt;
-    for (const w of this.wheels) {
+    for (let i = 0; i < this.wheels.length; i++) {
+      const w = this.wheels[i];
       const pivot = w.mesh;
+      const omega = w.front ? rollOmega : spinOmega;
+      this.spin[i] -= omega * dt;
       // order YXZ: steer first, spin inside the steered frame — correct look
       pivot.rotation.y = w.front ? steerAngle : 0;
-      pivot.rotation.x = w.front ? this.spinFront : this.spinRear;
+      pivot.rotation.x = this.spin[i];
+      pivot.rotation.z = 0;
+    }
+  }
+
+  /**
+   * Pose from an interpolated render transform with per-wheel state.
+   * steers/omegas/cambers are in FL,FR,RL,RR order (matched by front/left).
+   */
+  syncSnapshot(
+    pos: THREE.Vector3,
+    quat: THREE.Quaternion,
+    steers: number[],
+    omegas: number[],
+    cambers: number[],
+    dt: number,
+  ) {
+    this.group.position.set(pos.x, pos.y - 0.72, pos.z);
+    this.group.quaternion.copy(quat);
+    for (let i = 0; i < this.wheels.length; i++) {
+      const w = this.wheels[i];
+      // wheels[] order isn't guaranteed FL,FR,RL,RR — resolve by front/left
+      const idx = (w.front ? 0 : 2) + (w.left ? 0 : 1);
+      this.spin[i] -= (omegas[idx] ?? 0) * dt;
+      const pivot = w.mesh;
+      pivot.rotation.y = steers[idx] ?? 0;
+      pivot.rotation.x = this.spin[i];
+      pivot.rotation.z = cambers[idx] ?? 0;
     }
   }
 }
