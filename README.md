@@ -6,7 +6,7 @@ You spawn parked on a procedurally curving four-lane highway and drive as far as
 
 ## Downloading a build
 
-Grab the latest DMG (macOS) or Setup zip (Windows) from the [Releases page](../../releases). On macOS, the app is not Apple-signed, so the first open is blocked by Gatekeeper: try opening it once, then go to System Settings → Privacy & Security → **Open Anyway**. It opens normally from then on.
+Grab the latest DMG (macOS) or Setup zip (Windows) from the [Releases page](../../releases). On macOS, the app is not Apple-signed, so the first open is blocked by Gatekeeper: try opening it once, then System Settings → Privacy & Security → **Open Anyway** (or run `xattr -cr /Applications/OverSteer.app` if that button is missing). It opens normally from then on.
 
 ## The game
 
