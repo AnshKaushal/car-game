@@ -383,13 +383,20 @@ export default function App() {
             )
             if (intensity > 0.28) {
               visual.wheelContactPositions(car.drifting, smokeSpots)
-              smokeAcc += dt * intensity * 90
-              while (smokeAcc >= 1) {
-                smokeAcc -= 1
-                smoke.spawn(
-                  smokeSpots[(Math.random() * smokeSpots.length) | 0],
-                  Math.min(1, intensity),
-                )
+              // No wheel positions (model failed to load) means no smoke.
+              // Without this guard spawn() would dereference undefined and
+              // throw inside the frame loop, freezing the picture.
+              if (smokeSpots.length === 0) {
+                smokeAcc = 0
+              } else {
+                smokeAcc += dt * intensity * 90
+                while (smokeAcc >= 1) {
+                  smokeAcc -= 1
+                  smoke.spawn(
+                    smokeSpots[(Math.random() * smokeSpots.length) | 0],
+                    Math.min(1, intensity),
+                  )
+                }
               }
             }
           }
