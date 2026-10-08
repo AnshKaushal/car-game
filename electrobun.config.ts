@@ -6,6 +6,13 @@ export default {
     identifier: "dev.oversteer.game",
     version: "1.0",
   },
+  release: {
+    // Update feed for in-app auto-updates. The updater fetches
+    // `<baseUrl>/<channel>-<platform>-<arch>-update.json`, which GitHub serves
+    // from the latest release's assets (updater files keep stable names).
+    // Also enables delta-patch generation during the build.
+    baseUrl: "https://github.com/AnshKaushal/car-game/releases/latest/download",
+  },
   build: {
     mainProcess: "cottontail",
     cottontail: {

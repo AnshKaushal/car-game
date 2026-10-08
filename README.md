@@ -4,6 +4,10 @@ An endless-road driving sandbox for the desktop: one car, one infinite highway, 
 
 You spawn parked on a procedurally curving four-lane highway and drive as far as you want — the world recycles underneath you forever. There is no traffic, no AI and no win condition. It is a handling playground.
 
+## Downloading a build
+
+Grab the latest DMG (macOS) or Setup zip (Windows) from the [Releases page](../../releases). On macOS, the app is not Apple-signed, so the first open is blocked by Gatekeeper: try opening it once, then go to System Settings → Privacy & Security → **Open Anyway**. It opens normally from then on.
+
 ## The game
 
 - **Endless highway** — deterministic sum-of-sines centreline with elevation and banking, a ribbon-mesh road that recycles ahead of the car, and instanced trees/hills seeded per segment so a stretch looks the same every time you pass it.

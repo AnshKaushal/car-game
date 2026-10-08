@@ -142,3 +142,16 @@ jobs:
             --target "$GITHUB_SHA" \
             --title "OverSteer $VERSION" \
             --generate-notes
+
+      - name: Append macOS install note
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          body="$(gh release view "$TAG" --json body --jq .body)"
+          {
+            printf '%s\n' "$body"
+            printf '\n---\n\n'
+            cat .github/MACOS_INSTALL_NOTE.md
+          } > "$RUNNER_TEMP/notes.md"
+          gh release edit "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
