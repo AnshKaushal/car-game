@@ -1,4 +1,4 @@
-import { BrowserWindow, Updater } from "electrobun/main"
+import { ApplicationMenu, BrowserWindow, Updater } from "electrobun/main"
 
 const DEV_SERVER_PORT = 5173
 const DEV_SERVER_URL = `http://localhost:${DEV_SERVER_PORT}`
@@ -76,6 +76,12 @@ async function getMainViewUrl(): Promise<string> {
 
 const url = await getMainViewUrl()
 
+// Native app menu: without one, macOS has no Quit item, so Cmd+Q does
+// nothing. The Quit role gets the standard Cmd+Q binding automatically.
+ApplicationMenu.setApplicationMenu([
+  { label: "OverSteer", submenu: [{ role: "quit" }] },
+])
+
 const mainWindow = new BrowserWindow({
   title: "OverSteer",
   url,
@@ -88,6 +94,7 @@ const mainWindow = new BrowserWindow({
 mainWindow.setFullScreen(true)
 
 let lastRefullscreen = 0
+let fullscreenLostAt = 0
 setInterval(() => {
   let full = true
   try {
@@ -95,8 +102,22 @@ setInterval(() => {
   } catch {
     return
   }
-  if (full || Date.now() - lastRefullscreen < 2000) return
-  lastRefullscreen = Date.now()
+  const now = Date.now()
+  if (full) {
+    fullscreenLostAt = 0
+    return
+  }
+  if (!fullscreenLostAt) fullscreenLostAt = now
+  // Esc drops fullscreen and macOS sometimes minimizes the window along
+  // with it. Restore it first so the pause menu is actually visible.
+  try {
+    if (mainWindow.isMinimized()) mainWindow.unminimize()
+  } catch {}
+  // Re-enter fullscreen only once the exit has settled. Requesting it
+  // mid-transition is what glitched the window into the dock.
+  if (now - fullscreenLostAt < 2500) return
+  if (now - lastRefullscreen < 2000) return
+  lastRefullscreen = now
   try {
     mainWindow.setFullScreen(true)
   } catch {}

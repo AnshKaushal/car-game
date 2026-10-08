@@ -135,6 +135,9 @@ export class WorldManager {
   private segMin = 0
   private segMax = -1
   private maxTrees = 900
+  private R?: typeof RAPIER
+  private physWorld?: RAPIER.World
+  private segColliders = new Map<number, RAPIER.Collider[]>()
   private hills: Hill[] = []
   private readonly SEG_BEHIND = 4
   private readonly SEG_AHEAD = 24
@@ -310,7 +313,36 @@ export class WorldManager {
       .setFriction(1.0)
       .setRestitution(0)
     world.createCollider(col, body)
+    this.R = R
+    this.physWorld = world
     return body
+  }
+
+  // Trunk colliders for every loaded tree segment, recycled with the
+  // visuals. Without these the car drives straight through trees.
+  // One fixed cuboid per trunk (thin post, car height): canopies stay
+  // non-solid so only real trunk hits stop the car.
+  private syncTreeColliders() {
+    if (!this.R || !this.physWorld) return
+    const R = this.R
+    const world = this.physWorld
+    for (const [seg, cols] of [...this.segColliders]) {
+      if (this.segTrees.has(seg)) continue
+      for (const c of cols) world.removeCollider(c, false)
+      this.segColliders.delete(seg)
+    }
+    for (const [seg, trees] of this.segTrees) {
+      if (this.segColliders.has(seg)) continue
+      const cols: RAPIER.Collider[] = []
+      for (const t of trees) {
+        const col = R.ColliderDesc.cuboid(0.4, 1.8, 0.4)
+          .setTranslation(t.pos.x, 1.8, t.pos.z)
+          .setFriction(0.7)
+          .setRestitution(0)
+        cols.push(world.createCollider(col))
+      }
+      this.segColliders.set(seg, cols)
+    }
   }
 
   private rand(seed: number) {
@@ -398,6 +430,7 @@ export class WorldManager {
     this.segMin = minSeg
     this.segMax = maxSeg
     if (!dirty) return
+    this.syncTreeColliders()
     const m = new THREE.Matrix4()
     const q = new THREE.Quaternion()
     const e = new THREE.Euler()
