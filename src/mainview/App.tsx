@@ -4,8 +4,11 @@ import {
   initPhysics,
   createWorld,
   createChassisBody,
-  stepWorld,
   moveGroundBody,
+  FIXED_DT,
+  pushFrameTime,
+  consumeSubstep,
+  createFixedStepper,
 } from "./systems/PhysicsSystem"
 import { CarController, type CarTelemetry } from "./systems/CarController"
 import { WorldManager, roadCenterX, roadYaw } from "./systems/WorldManager"
@@ -201,6 +204,11 @@ export default function App() {
 
         let chaseFar = true
         let last = performance.now()
+        // Fixed-step accumulator: wall-clock frame time is deposited here
+        // and drained in exact FIXED_DT (1/120 s) substeps. Rendering,
+        // camera, smoke and HUD all stay on frame dt; only the controller +
+        // Rapier step run on the fixed clock.
+        const stepper = createFixedStepper()
         const camPos = new THREE.Vector3(startX, 3, 8)
         const camLook = new THREE.Vector3()
         const smoothFwd = new THREE.Vector3(0, 0, -1)
@@ -351,17 +359,48 @@ export default function App() {
             const p = body.translation()
             const s = -p.z
             car.reset(new THREE.Vector3(roadCenterX(s), 0.72, p.z), roadYaw(s))
+            stepper.acc = 0
           }
 
           if (pausedRef.current) {
+            stepper.acc = 0
             setSpeedLines(0)
             smoke.update(dt)
             renderer!.render(scene, camera)
             return
           }
 
-          const t = startedRef.current ? car.update(dt, inp) : null
-          if (startedRef.current) stepWorld(world, dt)
+          // Fixed-step physics: each substep runs controller(h) then
+          // exactly one world.step(). Input edges (shift/mode/launch
+          // toggles) fire only on the first substep so a multi-substep
+          // frame never double-shifts.
+          let t = null as null | ReturnType<typeof car.update>
+          if (startedRef.current) {
+            const steps = pushFrameTime(stepper, dt)
+            for (let i = 0; i < steps; i++) {
+              const subInp =
+                i === 0
+                  ? inp
+                  : {
+                      ...inp,
+                      upshiftPressed: false,
+                      downshiftPressed: false,
+                      toggleModePressed: false,
+                      toggleLaunchPressed: false,
+                      resetPressed: false,
+                      toggleCameraPressed: false,
+                      startPressed: false,
+                      escapePressed: false,
+                    }
+              t = car.update(FIXED_DT, subInp)
+              world.step()
+              consumeSubstep(stepper)
+            }
+            if (stepper.droppedTotal > 0) {
+              ;(window as any).__physicsDroppedTotal =
+                stepper.droppedTotal
+            }
+          }
 
           const bp = body.translation()
           const carPos = new THREE.Vector3(bp.x, bp.y, bp.z)
@@ -369,9 +408,9 @@ export default function App() {
           visual.syncFromBody(
             body,
             car.steerAngle,
-            car.forwardSpeed / CAR_PHYSICS.wheels.radius,
-            car.spinOmega,
+            car.getWheelOmegas(),
             dt,
+            car.getWheelCompressions(),
           )
           wm.update(-bp.z, carPos)
 
