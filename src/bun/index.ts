@@ -3,9 +3,6 @@ import { ApplicationMenu, BrowserWindow, Updater } from "electrobun/main"
 const DEV_SERVER_PORT = 5173
 const DEV_SERVER_URL = `http://localhost:${DEV_SERVER_PORT}`
 
-// Update watchdog: some updaters hang while offline, and we never want the
-// game launch to stall on one. Either the operation finishes in time or we
-// boot the installed version and try again next launch.
 async function withTimeout<T>(work: Promise<T>, ms: number): Promise<T | null> {
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
@@ -22,10 +19,6 @@ async function withTimeout<T>(work: Promise<T>, ms: number): Promise<T | null> {
   }
 }
 
-// Silent auto-update: check the release feed at startup, and if a newer
-// build is published, download it and hand off (the updater replaces the app
-// and relaunches it, so code below never runs for the old version).
-// Runs before the window opens, only for installed builds, never in dev.
 async function autoUpdate(): Promise<void> {
   let channel = ""
   try {
@@ -52,7 +45,6 @@ async function autoUpdate(): Promise<void> {
       await Updater.applyUpdate()
     }
   } catch {
-    // Offline, no feed, or anything else: boot the installed version.
   }
 }
 
@@ -76,8 +68,6 @@ async function getMainViewUrl(): Promise<string> {
 
 const url = await getMainViewUrl()
 
-// Native app menu: without one, macOS has no Quit item, so Cmd+Q does
-// nothing. The Quit role gets the standard Cmd+Q binding automatically.
 ApplicationMenu.setApplicationMenu([
   { label: "OverSteer", submenu: [{ role: "quit" }] },
 ])
@@ -89,6 +79,30 @@ const mainWindow = new BrowserWindow({
     width: 900,
     height: 700,
   },
+  styleMask: {
+    Miniaturizable: false,
+  },
+})
+
+const MACOS_ESCAPE_KEYCODE = 53
+
+mainWindow.on("keyDown", (event: any) => {
+  const data = event?.data ?? event
+  if (data?.keyCode !== MACOS_ESCAPE_KEYCODE) return
+
+  try {
+    mainWindow.webview.executeJavascript(
+      `document.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape', key: 'Escape', bubbles: true }));
+       document.dispatchEvent(new KeyboardEvent('keyup',   { code: 'Escape', key: 'Escape', bubbles: true }));`,
+    )
+  } catch {}
+
+  try {
+    if (!mainWindow.isFullScreen()) {
+      if (mainWindow.isMinimized()) mainWindow.unminimize()
+      mainWindow.setFullScreen(true)
+    }
+  } catch {}
 })
 
 mainWindow.setFullScreen(true)
@@ -108,19 +122,15 @@ setInterval(() => {
     return
   }
   if (!fullscreenLostAt) fullscreenLostAt = now
-  // Esc drops fullscreen and macOS sometimes minimizes the window along
-  // with it. Restore it first so the pause menu is actually visible.
   try {
     if (mainWindow.isMinimized()) mainWindow.unminimize()
   } catch {}
-  // Re-enter fullscreen only once the exit has settled. Requesting it
-  // mid-transition is what glitched the window into the dock.
-  if (now - fullscreenLostAt < 2500) return
-  if (now - lastRefullscreen < 2000) return
+  if (now - fullscreenLostAt < 600) return
+  if (now - lastRefullscreen < 800) return
   lastRefullscreen = now
   try {
     mainWindow.setFullScreen(true)
   } catch {}
-}, 500)
+}, 200)
 
 console.log("OverSteer started!")

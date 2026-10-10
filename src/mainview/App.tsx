@@ -177,6 +177,20 @@ export default function App() {
         body.setRotation({ x: q0.x, y: q0.y, z: q0.z, w: q0.w }, true)
         const car = new CarController(world, body, R)
 
+        {
+          const zeroInput = {
+            throttle: 0, brake: 0, steer: 0, handbrake: false,
+            upshiftPressed: false, downshiftPressed: false,
+            toggleModePressed: false, toggleLaunchPressed: false,
+            resetPressed: false, toggleCameraPressed: false,
+            startPressed: false, escapePressed: false,
+          }
+          for (let i = 0; i < 120; i++) {
+            car.update(FIXED_DT, zeroInput)
+            world.step()
+          }
+        }
+
         const visual = new CarVisual()
         try {
           await visual.load(baseUrl)
@@ -204,10 +218,6 @@ export default function App() {
 
         let chaseFar = true
         let last = performance.now()
-        // Fixed-step accumulator: wall-clock frame time is deposited here
-        // and drained in exact FIXED_DT (1/120 s) substeps. Rendering,
-        // camera, smoke and HUD all stay on frame dt; only the controller +
-        // Rapier step run on the fixed clock.
         const stepper = createFixedStepper()
         const camPos = new THREE.Vector3(startX, 3, 8)
         const camLook = new THREE.Vector3()
@@ -335,6 +345,18 @@ export default function App() {
         dom.addEventListener("pointercancel", onPointerUp)
         document.addEventListener("pointerlockchange", onLockChange)
 
+        const lockGuard = window.setInterval(() => {
+          if (
+            startedRef.current &&
+            !pausedRef.current &&
+            !mouseLocked &&
+            !lockWanted &&
+            document.pointerLockElement !== dom
+          ) {
+            tryLock()
+          }
+        }, 800)
+
         if (disposed) return
         setLoading(false)
 
@@ -370,10 +392,6 @@ export default function App() {
             return
           }
 
-          // Fixed-step physics: each substep runs controller(h) then
-          // exactly one world.step(). Input edges (shift/mode/launch
-          // toggles) fire only on the first substep so a multi-substep
-          // frame never double-shifts.
           let t = null as null | ReturnType<typeof car.update>
           if (startedRef.current) {
             const steps = pushFrameTime(stepper, dt)
@@ -422,9 +440,6 @@ export default function App() {
             )
             if (intensity > 0.28) {
               visual.wheelContactPositions(car.drifting, smokeSpots)
-              // No wheel positions (model failed to load) means no smoke.
-              // Without this guard spawn() would dereference undefined and
-              // throw inside the frame loop, freezing the picture.
               if (smokeSpots.length === 0) {
                 smokeAcc = 0
               } else {
@@ -545,6 +560,7 @@ export default function App() {
           document.removeEventListener("pointerlockchange", onLockChange)
           input.detach()
           if (lockRetry) window.clearTimeout(lockRetry)
+          window.clearInterval(lockGuard)
           document.removeEventListener("pointermove", onForceHide)
           document.removeEventListener("pointerdown", onGesture)
           document.removeEventListener("keydown", onGesture)

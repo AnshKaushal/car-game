@@ -318,10 +318,6 @@ export class WorldManager {
     return body
   }
 
-  // Trunk colliders for every loaded tree segment, recycled with the
-  // visuals. Without these the car drives straight through trees.
-  // One fixed cuboid per trunk (thin post, car height): canopies stay
-  // non-solid so only real trunk hits stop the car.
   private syncTreeColliders() {
     if (!this.R || !this.physWorld) return
     const R = this.R

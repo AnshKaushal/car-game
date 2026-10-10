@@ -4,11 +4,6 @@ import type * as RAPIER from "@dimforge/rapier3d-compat"
 
 export const CAR_MODEL_YAW = Math.PI
 
-/**
- * Documented static compression estimate (m) used as the visual reference:
- * mean corner load 16186.5/4 N over 55000 N/m ≈ 0.074 m. F/R corners differ
- * by ~±5 mm around this; invisible at render scale.
- */
 export const SUSP_VISUAL_REF = 0.074
 
 export class CarVisual {
@@ -123,8 +118,6 @@ export class CarVisual {
         })
       }
     }
-    // Canonical order FL, FR, RL, RR to match WHEEL_LOCAL so per-wheel
-    // suspension compressions map 1:1 in syncFromBody.
     this.wheels.sort(
       (a, b) =>
         (a.front ? 0 : 2) + (a.left ? 0 : 1) - ((b.front ? 0 : 2) + (b.left ? 0 : 1)),
@@ -156,18 +149,12 @@ export class CarVisual {
     this.group.position.set(t.x, t.y - 0.72, t.z)
     this.group.quaternion.set(r.x, r.y, r.z, r.w)
 
-    // Phase 3: each visual wheel integrates its own simulated angular
-    // velocity. Visual rotation consumes simulation output only.
     for (let i = 0; i < this.wheels.length; i++) {
       const w = this.wheels[i]
       const pivot = w.mesh
       pivot.rotation.y = w.front ? steerAngle : 0
       this.spinAngles[i] -= (wheelOmegas[i] ?? 0) * dt
       pivot.rotation.x = this.spinAngles[i]
-      // Suspension travel: pivot rises relative to the body as the corner
-      // compresses. Reference is the documented static estimate (0.074 m);
-      // clamped to the solver's travel bounds. Purely visual — the
-      // authoritative state stays in the physics solver.
       if (compressions && i < compressions.length) {
         const c = compressions[i] ?? SUSP_VISUAL_REF
         pivot.position.y =

@@ -49,7 +49,7 @@ export const CAR_PHYSICS = {
     shiftTimeManual: 0.08,
     clutchEngagementRPM: 1500,
     clutchSlipTime: 0.3,
-    launchControlRPM: 4000,
+    launchControlRPM: 4500,
     launchControlActive: true,
     torqueConverter: {
       stallMultiplication: 1.7,
@@ -74,7 +74,7 @@ export const CAR_PHYSICS = {
     frictionMu: 1.4,
     referenceLoad: 4000,
     rollingResist: 0.012,
-    relaxationLength: 0.4,
+    relaxationLength: 0.18,
     slipDampRate: 100,
     pacejka: {
       longitudinal: {
