@@ -49,7 +49,7 @@ export const CAR_PHYSICS = {
     shiftTimeManual: 0.08,
     clutchEngagementRPM: 1500,
     clutchSlipTime: 0.3,
-    launchControlRPM: 3000,
+    launchControlRPM: 4000,
     launchControlActive: true,
     torqueConverter: {
       stallMultiplication: 1.7,
@@ -75,22 +75,6 @@ export const CAR_PHYSICS = {
     referenceLoad: 4000,
     rollingResist: 0.012,
     relaxationLength: 0.4,
-    /**
-     * Viscous tire-loss rate in N per m/s of contact slip velocity,
-     * wheel-side only. Its ONLY job is bounding wheel spin once the tire
-     * saturates (MF force stops growing past the peak, so nothing else
-     * limits ω when drive exceeds slide capacity — e.g. handbrake
-     * burnout with TC defeated). It must not tax normal driving: measured
-     * at 87 m/s road speed with 2.3% slip, 400 costs ~800 N per rear
-     * wheel (28% of drive force), which held the gear-7 equilibrium
-     * (~336 km/h) just under the 7200 rpm 7→8 upshift point and capped
-     * top speed at ~313 km/h. 100 costs ~200 N per wheel there —
-     * comparable to real speed-dependent rolling losses (~2·Crr·Fz) —
-     * restoring the pre-Phase-4 top speed (338.6 km/h in 8th) while the
-     * saturated-spin equilibrium stays bounded (~205 rad/s; 0 runs away:
-     * ω > 12000 rad/s within 5 s of a standing burnout). Revisit in
-     * Phase 5 with engine power-limit coupling.
-     */
     slipDampRate: 100,
     pacejka: {
       longitudinal: {
@@ -121,7 +105,7 @@ export const CAR_PHYSICS = {
       },
     },
     suspension: {
-      springRate: 55000,
+      springRate: 65000,
       damperRate: 4500,
       travel: 0.12,
       targetDampingRatio: 0.85,
@@ -156,11 +140,11 @@ export const CAR_PHYSICS = {
     stabilityControl: 0.2,
     countersteerAssist: 4500,
     speedFeel: {
-      fovBase: 68,
+      fovBase: 60,
       fovMax: 104,
       fovAtMaxSpeedKmh: 330,
       linesStrength: 0.85,
-      linesFromKmh: 110,
+      linesFromKmh: 120,
       shakeAmp: 0.0016,
       shakeFromKmh: 140,
     },

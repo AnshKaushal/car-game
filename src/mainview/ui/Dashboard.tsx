@@ -1,7 +1,8 @@
 import { useEffect, useRef } from "react"
 import type { CarTelemetry } from "../systems/CarController"
 
-const RED_FROM_RPM = 7000
+const RED_FROM_RPM = 6750
+const YELLOW_FROM_RPM = 5750
 const MAX_RPM = 8000
 const MAX_KMH = 340
 
@@ -16,6 +17,7 @@ function polar(cx: number, cy: number, r: number, deg: number) {
 interface GaugeRefs {
   needleRef: { current: SVGGElement | null }
   numRef: { current: SVGTextElement | null }
+  rimRef?: { current: SVGCircleElement | null }
 }
 
 const SANS = 'Inter, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif'
@@ -27,6 +29,7 @@ function BmwDial({
   redFrom,
   refs,
   id,
+  modeLabel,
 }: {
   title: string
   unit: string
@@ -34,6 +37,7 @@ function BmwDial({
   redFrom: number
   refs: GaugeRefs
   id: string
+  modeLabel?: string
 }) {
   const CX = 100,
     CY = 100,
@@ -49,7 +53,9 @@ function BmwDial({
     const labelled = i % labelEvery === 0 || i === steps
     const p1 = polar(CX, CY, CR, a)
     const p2 = polar(CX, CY, CR - (labelled ? 12 : 6), a)
-    const red = frac >= redFrom
+    const rpm = frac * maxLabel * 1000
+    const red = isRpm && rpm >= RED_FROM_RPM
+    const yellow = isRpm && rpm >= YELLOW_FROM_RPM && !red
     ticks.push(
       <line
         key={i}
@@ -58,7 +64,13 @@ function BmwDial({
         x2={p2.x}
         y2={p2.y}
         stroke={
-          red ? "#e30613" : labelled ? "#f2f4f7" : "rgba(242,244,247,0.45)"
+          red
+            ? "#e30613"
+            : yellow
+              ? "#facc15"
+              : labelled
+                ? "#f2f4f7"
+                : "rgba(242,244,247,0.45)"
         }
         strokeWidth={labelled ? 2.6 : 1.2}
         strokeLinecap="round"
@@ -76,7 +88,7 @@ function BmwDial({
           y={pt.y + 5}
           textAnchor="middle"
           fontSize="12.5"
-          fill={red ? "#ff5a5a" : "#e8ebef"}
+          fill={red ? "#ff5a5a" : yellow ? "#facc15" : "#e8ebef"}
           fontFamily={SANS}
           fontWeight={600}
         >
@@ -110,6 +122,7 @@ function BmwDial({
       </defs>
 
       <circle
+        ref={refs.rimRef}
         cx={CX}
         cy={CY}
         r={CR + 9}
@@ -149,7 +162,7 @@ function BmwDial({
 
       <text
         x={CX}
-        y={CY - 14}
+        y={CY - 18}
         textAnchor="middle"
         fontSize="9"
         fill="#8f99a8"
@@ -162,7 +175,7 @@ function BmwDial({
       <text
         ref={refs.numRef}
         x={CX}
-        y={CY + 32}
+        y={CY + 42}
         textAnchor="middle"
         fontSize="30"
         fill="#ffffff"
@@ -174,15 +187,17 @@ function BmwDial({
       </text>
       <text
         x={CX}
-        y={CY + 46}
+        y={CY + 56}
         textAnchor="middle"
-        fontSize="8.5"
-        fill="#8f99a8"
+        fontSize={modeLabel ? "8" : "8.5"}
+        fill={
+          modeLabel ? (modeLabel === "AUTO" ? "#7db8ec" : "#cbd5e1") : "#8f99a8"
+        }
         fontFamily={SANS}
-        letterSpacing="2.5"
-        fontWeight={500}
+        letterSpacing={modeLabel ? "1.5" : "2.5"}
+        fontWeight={600}
       >
-        {unit}
+        {modeLabel ?? unit}
       </text>
 
       <g ref={refs.needleRef}>
@@ -192,18 +207,8 @@ function BmwDial({
           x2={tip.x}
           y2={tip.y}
           stroke="#e30613"
-          strokeWidth="3.2"
+          strokeWidth="4.5"
           strokeLinecap="round"
-        />
-        <line
-          x1={tail.x}
-          y1={tail.y}
-          x2={tip.x}
-          y2={tip.y}
-          stroke="#ffffff"
-          strokeWidth="0.9"
-          strokeLinecap="round"
-          opacity="0.55"
         />
         <circle
           cx={CX}
@@ -237,7 +242,7 @@ export default function Dashboard({ tele }: { tele: CarTelemetry }) {
   const spdNum = useRef<SVGTextElement | null>(null)
   const rpmNeedle = useRef<SVGGElement | null>(null)
   const rpmNum = useRef<SVGTextElement | null>(null)
-  const shiftRef = useRef<HTMLDivElement | null>(null)
+  const rpmRim = useRef<SVGCircleElement | null>(null)
 
   useEffect(() => {
     let raf = 0
@@ -251,45 +256,64 @@ export default function Dashboard({ tele }: { tele: CarTelemetry }) {
       const t = teleRef.current
       dRpm += (t.rpm - dRpm) * (1 - Math.exp(-dt * 14))
       dKmh += (Math.abs(t.speedKmh) - dKmh) * (1 - Math.exp(-dt * 10))
+
       if (rpmNeedle.current) {
         rpmNeedle.current.setAttribute(
           "transform",
           `rotate(${angleFor(dRpm / MAX_RPM)} 100 100)`,
         )
       }
+
       if (spdNeedle.current) {
         spdNeedle.current.setAttribute(
           "transform",
           `rotate(${angleFor(dKmh / MAX_KMH)} 100 100)`,
         )
       }
+
       if (rpmNum.current) {
-        rpmNum.current.textContent = (dRpm / 1000).toFixed(1)
+        rpmNum.current.textContent = teleRef.current.gearLabel
         rpmNum.current.setAttribute(
           "fill",
-          dRpm >= RED_FROM_RPM ? "#ff5a5a" : "#ffffff",
+          teleRef.current.gearLabel === "R"
+            ? "#ff5a5a"
+            : teleRef.current.gearLabel === "N"
+              ? "#f5b942"
+              : "#ffffff",
         )
       }
-      if (spdNum.current) spdNum.current.textContent = String(Math.round(dKmh))
-      if (shiftRef.current) {
-        const hot = dRpm >= 6600
-        shiftRef.current.style.opacity = hot
-          ? String(0.6 + 0.4 * Math.sin(now / 90))
-          : "0"
+
+      if (rpmRim.current) {
+        const limiter = dRpm >= RED_FROM_RPM
+        const warning = dRpm >= YELLOW_FROM_RPM
+        const flash = limiter ? (Math.sin(now * 0.045) > 0 ? 1 : 0.10) : 1
+
+        rpmRim.current.setAttribute(
+          "stroke",
+          limiter ? `rgba(227,6,19,${flash})` : "url(#bmw-rpm-chrome)",
+        )
+
+        rpmRim.current.setAttribute(
+          "stroke-width",
+          limiter ? String(6 + flash * 2) : warning ? "7" : "6",
+        )
+
+        rpmRim.current.style.filter = limiter
+          ? flash > 0.5
+            ? "drop-shadow(0 0 5px rgba(227,6,19,0.95))"
+            : "none"
+          : warning
+            ? "drop-shadow(0 0 5px rgba(250,204,21,0.85))"
+            : "none"
       }
+
+      if (spdNum.current) spdNum.current.textContent = String(Math.round(dKmh))
     }
     raf = requestAnimationFrame(loop)
     return () => cancelAnimationFrame(raf)
   }, [])
 
   const launching = tele.launchArmed || tele.launching
-  const gearTone =
-    tele.gearLabel === "R"
-      ? "#ff5a5a"
-      : tele.gearLabel === "N"
-        ? "#f5b942"
-        : "#ffffff"
-
   return (
     <div
       className="pointer-events-none absolute inset-0 select-none"
@@ -321,62 +345,15 @@ export default function Dashboard({ tele }: { tele: CarTelemetry }) {
           />
         </div>
 
-        {}
-        <div className="relative mb-1 flex w-[104px] shrink-0 flex-col items-center overflow-hidden rounded-2xl border border-white/10 bg-black/65 px-2 pt-1.5 pb-2 backdrop-blur-md">
-          <div className="absolute inset-x-0 top-0 flex h-[3px]">
-            <div className="flex-1 bg-[#51a7d5]" />
-            <div className="flex-1 bg-[#1c3d7c]" />
-            <div className="flex-1 bg-[#e30613]" />
-          </div>
-          <div
-            ref={shiftRef}
-            className="absolute inset-x-0 top-0 h-[3px] bg-red-500"
-            style={{ opacity: 0 }}
-          />
-          <div className="mt-0.5 text-[8px] font-semibold tracking-[0.3em] text-[#8f99a8]">
-            M3
-          </div>
-          <div
-            className="leading-none font-bold"
-            style={{
-              fontSize: 40,
-              color: gearTone,
-              textShadow: "0 0 24px rgba(255,255,255,0.25)",
-              fontVariantNumeric: "tabular-nums",
-            }}
-          >
-            {tele.gearLabel}
-          </div>
-          <div
-            className={`mt-1 rounded-full px-2 py-px text-[9px] font-semibold tracking-[0.18em]
-            ${tele.autoMode ? "bg-[#1c69b4]/25 text-[#7db8ec] border border-[#1c69b4]/50" : "bg-white/10 text-gray-300 border border-white/15"}`}
-          >
-            {tele.autoMode ? "AUTO" : "MANUAL"}
-          </div>
-          {(tele.parkingBrake || tele.drift) && (
-            <div className="mt-1 flex gap-1 text-[8px] font-semibold tracking-wider">
-              {tele.parkingBrake && (
-                <span className="rounded border border-amber-400/60 bg-amber-950/70 px-1.5 py-0.5 text-amber-300">
-                  PARK
-                </span>
-              )}
-              {tele.drift && (
-                <span className="rounded border border-sky-400/60 bg-sky-950/70 px-1.5 py-0.5 text-sky-200">
-                  DRIFT
-                </span>
-              )}
-            </div>
-          )}
-        </div>
-
         <div className="w-[clamp(150px,20vw,250px)]">
           <BmwDial
             title="POWER"
-            unit="RPM X1000"
+            unit=""
             maxLabel={8}
             redFrom={RED_FROM_RPM / MAX_RPM}
-            refs={{ needleRef: rpmNeedle, numRef: rpmNum }}
+            refs={{ needleRef: rpmNeedle, numRef: rpmNum, rimRef: rpmRim }}
             id="bmw-rpm"
+            modeLabel={tele.autoMode ? "AUTO" : "MANUAL"}
           />
         </div>
       </div>
