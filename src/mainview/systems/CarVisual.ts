@@ -4,11 +4,22 @@ import type * as RAPIER from "@dimforge/rapier3d-compat"
 
 export const CAR_MODEL_YAW = Math.PI
 
+/**
+ * Documented static compression estimate (m) used as the visual reference:
+ * mean corner load 16186.5/4 N over 55000 N/m ≈ 0.074 m. F/R corners differ
+ * by ~±5 mm around this; invisible at render scale.
+ */
+export const SUSP_VISUAL_REF = 0.074
+
 export class CarVisual {
   group = new THREE.Group()
-  wheels: { mesh: THREE.Object3D; front: boolean; left: boolean }[] = []
-  private spinFront = 0
-  private spinRear = 0
+  wheels: {
+    mesh: THREE.Object3D
+    front: boolean
+    left: boolean
+    baseY: number
+  }[] = []
+  private spinAngles = [0, 0, 0, 0]
   private loader = new GLTFLoader()
 
   async load(baseUrl: string): Promise<void> {
@@ -65,7 +76,12 @@ export class CarVisual {
         this.group.add(pivot)
         pivot.attach(wg)
         const front = center.z < 0
-        this.wheels.push({ mesh: pivot, front, left: center.x < 0 })
+        this.wheels.push({
+          mesh: pivot,
+          front,
+          left: center.x < 0,
+          baseY: pivot.position.y,
+        })
       }
     }
 
@@ -99,9 +115,20 @@ export class CarVisual {
         const rim = new THREE.Mesh(rimG, rimM)
         pivot.add(w, rim)
         this.group.add(pivot)
-        this.wheels.push({ mesh: pivot, front: sp.front, left: sp.left })
+        this.wheels.push({
+          mesh: pivot,
+          front: sp.front,
+          left: sp.left,
+          baseY: pivot.position.y,
+        })
       }
     }
+    // Canonical order FL, FR, RL, RR to match WHEEL_LOCAL so per-wheel
+    // suspension compressions map 1:1 in syncFromBody.
+    this.wheels.sort(
+      (a, b) =>
+        (a.front ? 0 : 2) + (a.left ? 0 : 1) - ((b.front ? 0 : 2) + (b.left ? 0 : 1)),
+    )
   }
 
   wheelContactPositions(
@@ -120,21 +147,33 @@ export class CarVisual {
   syncFromBody(
     body: RAPIER.RigidBody,
     steerAngle: number,
-    rollOmega: number,
-    spinOmega: number,
+    wheelOmegas: readonly number[],
     dt: number,
+    compressions?: readonly number[],
   ) {
     const t = body.translation()
     const r = body.rotation()
     this.group.position.set(t.x, t.y - 0.72, t.z)
     this.group.quaternion.set(r.x, r.y, r.z, r.w)
 
-    this.spinFront -= rollOmega * dt
-    this.spinRear -= spinOmega * dt
-    for (const w of this.wheels) {
+    // Phase 3: each visual wheel integrates its own simulated angular
+    // velocity. Visual rotation consumes simulation output only.
+    for (let i = 0; i < this.wheels.length; i++) {
+      const w = this.wheels[i]
       const pivot = w.mesh
       pivot.rotation.y = w.front ? steerAngle : 0
-      pivot.rotation.x = w.front ? this.spinFront : this.spinRear
+      this.spinAngles[i] -= (wheelOmegas[i] ?? 0) * dt
+      pivot.rotation.x = this.spinAngles[i]
+      // Suspension travel: pivot rises relative to the body as the corner
+      // compresses. Reference is the documented static estimate (0.074 m);
+      // clamped to the solver's travel bounds. Purely visual — the
+      // authoritative state stays in the physics solver.
+      if (compressions && i < compressions.length) {
+        const c = compressions[i] ?? SUSP_VISUAL_REF
+        pivot.position.y =
+          w.baseY +
+          Math.max(-0.06, Math.min(0.18, c - SUSP_VISUAL_REF))
+      }
     }
   }
 }

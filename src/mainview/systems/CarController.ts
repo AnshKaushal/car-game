@@ -2,6 +2,15 @@ import * as RAPIER from "@dimforge/rapier3d-compat"
 import * as THREE from "three"
 import { CAR_PHYSICS } from "../constants/physics"
 import type { DriveInput } from "./InputManager"
+import { SuspensionSystem, type WheelSuspState } from "./Suspension"
+import {
+  WheelDynamics,
+  estimateWheelInertia,
+} from "./WheelDynamics"
+import {
+  TireModel,
+  type TireResult,
+} from "./TireModel"
 
 export type Gear = -1 | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8
 
@@ -63,7 +72,10 @@ export class CarController {
   rpm: number = CAR_PHYSICS.engine.idleRPM
   private shiftTimer = 0
   private clutch = 1
+  /** Mean rear-wheel angular velocity, rad/s (diagnostic for RPM coupling). */
   private wheelOmega = 0
+  /** Mean rear-wheel angular velocity, rad/s (legacy visual/telemetry tap). */
+  spinOmega = 0
   launchEnabled = true
   launching = false
   launchArmed = false
@@ -75,10 +87,24 @@ export class CarController {
   steerAngle = 0
   slipRatioAvg = 0
   drifting = false
-  spinOmega = 0
   rearSlip = 0
   lastWheelLoad = [0, 0, 0, 0]
   lastWheelLong = [0, 0, 0, 0]
+  /** Persistent per-wheel suspension states (Phase 2 solver). */
+  suspension: SuspensionSystem
+  /** Persistent per-wheel rotational states (Phase 3 solver). */
+  wheelDynamics: WheelDynamics
+  /** Coherent per-wheel tire model (Phase 4). Owns all tire forces. */
+  tireModel: TireModel
+  /** Per-wheel tire diagnostics (slip, forces, limits) for tests/HUD. */
+  lastTireDiag: TireResult[] = []
+  /**
+   * Relaxation-lagged contact forces per wheel (Pacejka transient
+   * model). The lag state — not the wheel — absorbs contact stiffness,
+   * which is what makes the whole coupling stable without Newton
+   * solves. Reset with the car.
+   */
+  tireLag: { fx: number; fy: number }[] = [{ fx: 0, fy: 0 }, { fx: 0, fy: 0 }, { fx: 0, fy: 0 }, { fx: 0, fy: 0 }]
 
   private filteredSpeed = 0
 
@@ -88,6 +114,37 @@ export class CarController {
     this.R = R
     this.body.setLinearDamping(0.005)
     this.body.setAngularDamping(0.55)
+    this.suspension = new SuspensionSystem(world, body, R, WHEEL_LOCAL)
+    const P0 = CAR_PHYSICS
+    const wheelMass =
+      (P0.mass.frontWheel + P0.mass.rearWheel) / 2
+    this.wheelDynamics = new WheelDynamics(
+      P0.wheels.radius,
+      estimateWheelInertia(wheelMass, P0.wheels.radius),
+      P0.wheels.slipDampRate,
+    )
+    this.tireModel = new TireModel(
+      {
+        mu: P0.wheels.frictionMu,
+        referenceLoad: P0.wheels.referenceLoad,
+        loadExpLong: P0.wheels.pacejka.longitudinal.loadSensitivity,
+        loadExpLat: P0.wheels.pacejka.lateral.loadSensitivity,
+        rollingResist: P0.wheels.rollingResist,
+        long: {
+          B: P0.wheels.pacejka.longitudinal.B,
+          C: P0.wheels.pacejka.longitudinal.C,
+          D: P0.wheels.pacejka.longitudinal.D,
+          E: P0.wheels.pacejka.longitudinal.E,
+        },
+        lat: {
+          B: P0.wheels.pacejka.lateral.B,
+          C: P0.wheels.pacejka.lateral.C,
+          D: P0.wheels.pacejka.lateral.D,
+          E: P0.wheels.pacejka.lateral.E,
+        },
+      },
+      P0.wheels.radius,
+    )
   }
 
   reset(pos: THREE.Vector3, yaw = 0) {
@@ -101,9 +158,31 @@ export class CarController {
     this.shiftTimer = 0
     this.clutch = 1
     this.wheelOmega = 0
+    this.spinOmega = 0
+    this.wheelDynamics.reset()
+    for (const lag of this.tireLag) {
+      lag.fx = 0
+      lag.fy = 0
+    }
+    // Transient filters must not leak across a reset, otherwise a reset
+    // car behaves differently from a fresh one (e.g. a hot TC slip average
+    // would cut engine torque on the first post-reset launch).
+    this.steerAngle = 0
+    this.slipRatioAvg = 0
+    this.rearSlip = 0
     this.parkingBrake = true
     this.launchTimer = 0
     this.limiterCut = false
+    for (const st of this.suspension.states) {
+      st.grounded = false
+      st.compression = 0
+      st.suspVel = 0
+      st.springF = 0
+      st.damperF = 0
+      st.arbF = 0
+      st.force = 0
+      st.load = 0
+    }
   }
 
   get forwardSpeed(): number {
@@ -112,6 +191,66 @@ export class CarController {
     const quat = new THREE.Quaternion(q.x, q.y, q.z, q.w)
     const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(quat)
     return v.x * fwd.x + v.y * fwd.y + v.z * fwd.z
+  }
+
+  /** Per-wheel angular velocities in WHEEL_LOCAL order, rad/s. */
+  getWheelOmegas(): [number, number, number, number] {
+    return this.wheelDynamics.omegas()
+  }
+
+  /**
+   * Service + parking + handbrake torque magnitude for one wheel, N·m.
+   * Handbrake targets the rear axle only (see hbLock). Returned value is
+   * a magnitude — the wheel integrator applies the opposing direction.
+   * Includes the legacy ABS pulse (simplified approximation, Phase 6 owns
+   * a true slip-based ABS): below 2 m/s patch speed under hard braking
+   * the torque pulsates at ~14 Hz to limit low-speed lock/jitter. The
+   * tire pass calls this same helper so the chassis-force path and
+   * the rotation path can never disagree on brake input.
+   */
+  private brakeTorqueFor(
+    w: (typeof WHEEL_LOCAL)[number],
+    input: DriveInput,
+    speedKmh: number,
+    vLongPatch: number,
+    simTime: number,
+  ): number {
+    const P = CAR_PHYSICS
+    const brakeMax = w.front
+      ? P.wheels.brakeForce.front
+      : P.wheels.brakeForce.rear
+    let base: number
+    if (this.gear === -1) {
+      base = input.brake * brakeMax
+      if (this.parkingBrake) base = Math.max(base, 3000)
+    } else {
+      const hbLock = input.handbrake && !w.front
+      const lockF = Math.abs(input.steer)
+      const hbDrag = 2600 - 1400 * lockF - 800 * clamp(speedKmh / 15, 0, 1)
+      const hbForce = hbLock
+        ? input.throttle > 0.5
+          ? hbDrag
+          : P.wheels.handbrakeForce
+        : 0
+      base = input.brake * brakeMax + hbForce
+      if (this.parkingBrake) base = Math.max(base, 3000)
+    }
+    const wheelLock =
+      Math.abs(vLongPatch) < 2 && input.brake > 0.7 && Math.abs(vLongPatch) > 0.5
+    if (P.assists.absEnabled && wheelLock)
+      base *= 0.6 + 0.4 * Math.sin(simTime * 90)
+    return base
+  }
+
+  /** Per-wheel suspension compressions in WHEEL_LOCAL order, metres. */
+  getWheelCompressions(): [number, number, number, number] {
+    const s = this.suspension.states
+    return [
+      s[0]?.compression ?? 0,
+      s[1]?.compression ?? 0,
+      s[2]?.compression ?? 0,
+      s[3]?.compression ?? 0,
+    ]
   }
 
   update(dt: number, input: DriveInput): CarTelemetry {
@@ -214,7 +353,9 @@ export class CarController {
       }
       if (this.launchArmed) targetRpm = P.transmission.launchControlRPM
       this.rpm += (targetRpm - this.rpm) * Math.min(1, dt * 10)
-      this.wheelOmega = rollingOmega
+      // Phase 3: wheel angular velocity is integrated independently in
+      // wheelDynamics (see tire pass). It is NEVER overwritten here; the
+      // gearbox reads mean rear-wheel speed via predictedRpm/afterShift.
     }
 
     this.launching = false
@@ -303,7 +444,6 @@ export class CarController {
     const pos = this.body.translation()
     const bodyPos = new THREE.Vector3(pos.x, pos.y, pos.z)
     let totalSlip = 0
-    let groundedWheels = 0
     let rearSlipSum = 0
     let rearCount = 0
 
@@ -314,39 +454,43 @@ export class CarController {
       load: number
       contactY: number
       anchor: THREE.Vector3
-      vLong: number
-      vLat: number
-      fwd: THREE.Vector3
-      right: THREE.Vector3
+      /** Contact-point velocity (linvel + angvel × full lever), m/s. */
+      patchVel: THREE.Vector3
+      /** Flat wheel heading (steer included for fronts). */
+      heading: THREE.Vector3
+      /** Contact normal from the suspension raycast. */
+      normal: THREE.Vector3
+      /** Shaft drive torque for the rotation solve (rear only, RWD). */
+      driveT: number
+      /** Brake torque magnitude for the rotation solve. */
+      brakeM: number
     }
     const solves: WheelSolve[] = []
     const angvel0 = this.body.angvel()
-    const ang0 = new THREE.Vector3(angvel0.x, angvel0.y, angvel0.z)
-    const lin0 = new THREE.Vector3(linvel.x, linvel.y, linvel.z)
 
-    for (const w of WHEEL_LOCAL) {
-      const wi = WHEEL_LOCAL.indexOf(w)
-      const local = new THREE.Vector3(w.x, 0, w.z)
-      const anchorWorld = local.clone().applyQuaternion(quat).add(bodyPos)
+    // Phase 2 suspension: independent per-wheel spring/damper/ARB solve
+    // along the chassis-up axis. Applies chassis impulses at each anchor
+    // and returns persistent contact/load states for the tire pass below.
+    const linVec = new THREE.Vector3(linvel.x, linvel.y, linvel.z)
+    const angVec = new THREE.Vector3(angvel0.x, angvel0.y, angvel0.z)
+    const suspStates: WheelSuspState[] = this.suspension.update(
+      dt,
+      quat,
+      bodyPos,
+      linVec,
+      angVec,
+    )
+    let groundedWheels = 0
+    for (const st of suspStates) {
+      this.lastWheelLoad[st.wi] = st.load
+      if (!st.grounded) this.lastWheelLong[st.wi] = 0
+      else groundedWheels++
+    }
 
-      const rayOrigin = {
-        x: anchorWorld.x,
-        y: anchorWorld.y + 0.1,
-        z: anchorWorld.z,
-      }
-      const rayDir = { x: 0, y: -1, z: 0 }
-      const ray = new this.R.Ray(rayOrigin, rayDir)
-      const REST = 0.915
-      const maxToi = REST + 0.12
-      const hit = this.world.castRay(
-        ray,
-        maxToi,
-        true,
-        undefined,
-        undefined,
-        undefined,
-        this.body,
-      )
+    for (let wi = 0; wi < WHEEL_LOCAL.length; wi++) {
+      const w = WHEEL_LOCAL[wi]
+      const st = suspStates[wi]
+      const anchorWorld = st.anchorWorld
 
       const steer = w.front ? this.steerAngle : 0
       const wheelFwd = new THREE.Vector3(
@@ -356,14 +500,26 @@ export class CarController {
       ).applyQuaternion(quat)
       wheelFwd.y = 0
       wheelFwd.normalize()
-      const wheelRight = new THREE.Vector3()
-        .crossVectors(wheelFwd, new THREE.Vector3(0, 1, 0))
-        .normalize()
-        .negate()
 
-      if (!hit) {
-        this.lastWheelLoad[wi] = 0
-        this.lastWheelLong[wi] = 0
+      // Phase 3+4 wheel torques: shaft drive routes to the rear axle
+      // only (RWD); brake magnitudes come from the shared helper. The
+      // rotation solve runs in the tire pass below for grounded wheels
+      // (explicit, fed by the lagged contact force) and here for
+      // airborne wheels (no contact at all).
+      const driveT = w.front ? 0 : driveTorquePerRear
+      const vLongPre = st.pointVel.dot(wheelFwd)
+      const brakeM = this.brakeTorqueFor(
+        w,
+        input,
+        speedKmh,
+        vLongPre,
+        this.simTime,
+      )
+
+      if (!st.grounded) {
+        this.wheelDynamics.step(wi, dt, driveT, brakeM, 0, undefined)
+        this.tireLag[wi].fx = 0
+        this.tireLag[wi].fy = 0
         solves.push({
           w,
           wi,
@@ -371,120 +527,92 @@ export class CarController {
           load: 0,
           contactY: 0,
           anchor: anchorWorld,
-          vLong: 0,
-          vLat: 0,
-          fwd: wheelFwd,
-          right: wheelRight,
+          patchVel: new THREE.Vector3(),
+          heading: wheelFwd,
+          normal: new THREE.Vector3(0, 1, 0),
+          driveT,
+          brakeM,
         })
         continue
       }
-      groundedWheels++
-      const contactY = rayOrigin.y - hit.timeOfImpact
-      const compression = clamp(
-        REST - hit.timeOfImpact,
-        -0.06,
-        P.wheels.suspension.travel + 0.06,
-      )
 
-      const r = new THREE.Vector3(
-        anchorWorld.x - bodyPos.x,
-        0,
-        anchorWorld.z - bodyPos.z,
+      // True contact-point velocity: rigid-body motion at the contact
+      // patch (not the hub), so pitch/roll/yaw rates feed the tire.
+      const contactPoint = new THREE.Vector3(
+        anchorWorld.x,
+        st.contactY,
+        anchorWorld.z,
       )
-      const pointVel = lin0.clone().add(ang0.clone().cross(r))
-      const bump = 1 + Math.max(0, compression - 0.1) * 12
-      const springF = P.wheels.suspension.springRate * bump * compression
-      const damperF = -P.wheels.suspension.damperRate * pointVel.y
-      const suspF = Math.max(0, springF + damperF)
-      this.body.applyImpulseAtPoint(
-        { x: 0, y: suspF * dt, z: 0 },
-        anchorWorld,
-        true,
-      )
-
-      const load = suspF
-      this.lastWheelLoad[wi] = load
-
+      const lever = contactPoint.clone().sub(bodyPos)
+      const patchVel = linVec.clone().add(angVec.clone().cross(lever))
       solves.push({
         w,
         wi,
         grounded: true,
-        load,
-        contactY,
+        load: st.load,
+        contactY: st.contactY,
         anchor: anchorWorld,
-        vLong: pointVel.dot(wheelFwd),
-        vLat: pointVel.dot(wheelRight),
-        fwd: wheelFwd,
-        right: wheelRight,
+        patchVel,
+        heading: wheelFwd,
+        normal: st.contactNormal.clone(),
+        driveT,
+        brakeM,
       })
     }
 
-    const axleLoad = (front: boolean) => {
-      const ls = solves
-        .filter((s) => s.w.front === front && s.grounded)
-        .map((s) => s.load)
-      if (ls.length === 0) return 800
-      return ls.reduce((a, b) => a + b, 0) / ls.length
-    }
-    const avgFront = axleLoad(true)
-    const avgRear = axleLoad(false)
-
-    const muPeak = 1.4
-
+    // Phase 4 tire pass: ONE model (TireModel) owns all tire forces.
+    // Shaft/brake torques act only on the wheels (solves loop above);
+    // contact forces emerge from slip and feed the chassis here, with the
+    // equal-and-opposite reaction stored for the next rotation solve.
     for (const s of solves) {
-      if (!s.grounded) continue
-      const { w, wi, vLong, vLat } = s
-      const capLoad = Math.max(800, w.front ? avgFront : avgRear)
+      const { w, wi } = s
+      if (!s.grounded) {
+        this.lastWheelLong[wi] = 0
+        this.lastTireDiag[wi] = this.tireModel.eval({
+          grounded: false,
+          normalLoad: 0,
+          normal: { x: 0, y: 1, z: 0 },
+          patchVel: { x: 0, y: 0, z: 0 },
+          wheelOmega: 0,
+          wheelHeading: { x: 0, y: 0, z: -1 },
+          bodyForward: { x: 0, y: 0, z: -1 },
+        })
+        continue
+      }
+      const omega = this.wheelDynamics.wheels[wi].omega
+      const contact = {
+        grounded: true,
+        normalLoad: s.load,
+        normal: { x: s.normal.x, y: s.normal.y, z: s.normal.z },
+        patchVel: { x: s.patchVel.x, y: s.patchVel.y, z: s.patchVel.z },
+        wheelOmega: omega,
+        wheelHeading: { x: s.heading.x, y: s.heading.y, z: s.heading.z },
+        bodyForward: { x: fwd.x, y: 0, z: fwd.z },
+      }
+      const res = this.tireModel.eval(contact)
 
-      const maxTire = muPeak * capLoad
-      let longForce = 0
-      if (!w.front) {
-        const wheelTorque = driveTorquePerRear
-        const tractive = wheelTorque / wheelRadius
-        const spinBoost =
-          input.throttle * 2.5 * clamp(1 - Math.abs(vLong) / 22, 0.12, 1)
-        const spinVel =
-          this.gear === 0 ? vLong : this.wheelOmega * wheelRadius + spinBoost
-        const slip = clamp(
-          (spinVel - vLong) / Math.max(3, Math.abs(vLong) + 3),
-          -1,
-          1,
-        )
-        totalSlip += Math.abs(slip)
-        rearSlipSum += slip
-        rearCount++
-        const grip = Math.tanh(Math.abs(slip) * 4) * Math.sign(slip || tractive)
-        const spinLoss =
-          Math.abs(grip) * 0.28 * (1 - P.assists.tractionControl * 0.6)
-        longForce = clamp(tractive * (1 - spinLoss), -maxTire, maxTire)
-        if (this.gear === 0) longForce = 0
-        if (this.gear >= 1 && fwdSpeed < 0.05 && fwdSpeed > -2) {
-          longForce += clamp(-fwdSpeed * 1500, 0, 2000)
-        }
-        if (
-          this.gear >= 1 &&
-          input.throttle < 0.05 &&
-          input.brake < 0.05 &&
-          fwdSpeed > -0.5 &&
-          fwdSpeed < 3
-        ) {
-          longForce +=
+      // TEMPORARY Phase-5 driveline placeholders, behavior-identical to
+      // the legacy tire pass: torque-converter creep, engine-braking
+      // coast, hill-hold. Small contact forces with no tire-model home
+      // yet; kept isolated here (outside the friction ellipse) and
+      // included in the wheel reaction like all contact forces.
+      let legacyLong = 0
+      if (this.gear >= 1 && fwdSpeed < 0.05 && fwdSpeed > -2) {
+        if (!w.front) legacyLong += clamp(-fwdSpeed * 1500, 0, 2000)
+      }
+      if (
+        this.gear >= 1 &&
+        input.throttle < 0.05 &&
+        input.brake < 0.05 &&
+        fwdSpeed > -0.5 &&
+        fwdSpeed < 3
+      ) {
+        if (!w.front)
+          legacyLong +=
             (P.transmission.torqueConverter.creepForce / 2) *
             clamp(1 - fwdSpeed / 3, 0, 1)
-        }
-      } else {
-        totalSlip += 0
       }
-
-      let brakeTorque = 0
-      const brakeMax = w.front
-        ? P.wheels.brakeForce.front
-        : P.wheels.brakeForce.rear
       if (this.gear === -1) {
-        const revCap = clamp(1 - Math.max(0, -fwdSpeed - 7) / 5, 0, 1)
-        const revTractive =
-          (engineTorque * gearRatio * 0.85 * revCap) / 2 / wheelRadius
-        if (!w.front) longForce = clamp(-revTractive, -8000, 8000)
         if (
           !w.front &&
           input.throttle < 0.05 &&
@@ -492,81 +620,74 @@ export class CarController {
           fwdSpeed < 0.5 &&
           fwdSpeed > -3
         ) {
-          longForce -=
+          legacyLong -=
             (P.transmission.torqueConverter.creepForceReverse / 2) *
             clamp(1 + fwdSpeed / 3, 0, 1)
         }
-        brakeTorque = input.brake * brakeMax
-        if (this.parkingBrake) brakeTorque = Math.max(brakeTorque, 3000)
-      } else {
-        const hbLock = input.handbrake && !w.front
-        const lockF = Math.abs(input.steer)
-        const hbDrag = 2600 - 1400 * lockF - 800 * clamp(speedKmh / 15, 0, 1)
-        const hbForce = hbLock
-          ? input.throttle > 0.5
-            ? hbDrag
-            : P.wheels.handbrakeForce
-          : 0
-        brakeTorque = input.brake * brakeMax + hbForce
-        if (this.parkingBrake) brakeTorque = Math.max(brakeTorque, 3000)
       }
-      if (brakeTorque > 0) {
-        let b = brakeTorque / wheelRadius
-        if (Math.abs(vLong) < 0.6) b *= Math.abs(vLong) / 0.6
-        const wheelLock = Math.abs(vLong) < 2 && input.brake > 0.7
-        if (P.assists.absEnabled && wheelLock && Math.abs(vLong) > 0.5)
-          b *= 0.6 + 0.4 * Math.sin(this.simTime * 90)
-        longForce += clamp(
-          -Math.sign(vLong || 1) * b,
-          -maxTire - 2000,
-          maxTire + 2000,
-        )
-        if (Math.abs(vLong) < 0.4 && this.gear >= 1)
-          longForce = clamp(longForce, -4000, 4000)
-      }
-
       if (
         !w.front &&
         input.throttle < 0.05 &&
         this.gear >= 1 &&
-        Math.abs(vLong) > 1
+        Math.abs(res.vx) > 1
       ) {
         const lockup = clamp((speedKmh - 10) / 15, 0, 1)
         const engFric =
           P.engine.frictionTorqueBase +
           this.rpm * P.engine.frictionTorqueRPMFactor
         const coastT = (engFric * gearRatio * 0.85 * lockup) / 2 / wheelRadius
-        longForce += clamp(-Math.sign(vLong) * coastT, -2500, 2500)
-      }
-      if (Math.abs(vLong) > 0.5) {
-        longForce += -Math.sign(vLong) * 55
-      }
-      this.lastWheelLong[wi] = longForce
-
-      const latStiff = P.wheels.pacejka.lateral.B
-      let latForce = -vLat * latStiff * 520
-      const maxLat =
-        muPeak *
-        capLoad *
-        (input.handbrake && !w.front ? 0.35 : 1) *
-        (w.front ? 0.92 : 1.15)
-      const latUse = clamp(Math.abs(longForce) / Math.max(1, maxTire), 0, 1)
-      const latRoom =
-        maxLat *
-        clamp(Math.sqrt(Math.max(0, 1 - latUse * latUse * 0.7)), 0.5, 1)
-      latForce = clamp(latForce, -latRoom, latRoom)
-      if (P.assists.stabilityControl > 0 && Math.abs(vLat) > 4) {
-        latForce *= 1 + P.assists.stabilityControl * 0.4
-        latForce = clamp(latForce, -maxLat * 1.2, maxLat * 1.2)
+        legacyLong += clamp(-Math.sign(res.vx) * coastT, -2500, 2500)
       }
 
-      const F = s.fwd
-        .clone()
-        .multiplyScalar(longForce)
-        .add(s.right.clone().multiplyScalar(latForce))
+      // Relaxation-lagged contact force (Pacejka transient model): the
+      // lag state chases the steady-state curve with rate |vx|/σ,
+      // integrated implicitly (unconditionally stable, exact, one line).
+      // The lag — not the wheel — absorbs contact stiffness, so the
+      // wheel integrator below stays explicit and can neither explode
+      // nor trap in false slide-side wells. TC slip still reads the
+      // instantaneous (steady-state) slip, so assists stay responsive.
+      // The +0.5 m/s floor keeps parked forces from freezing stale
+      // (relaxing in ~0.8 s at standstill instead of never).
+      const lag = this.tireLag[wi]
+      const rate =
+        (Math.abs(res.vx) + 0.5) / CAR_PHYSICS.wheels.relaxationLength
+      lag.fx = (lag.fx + dt * rate * res.fx) / (1 + dt * rate)
+      lag.fy = (lag.fy + dt * rate * res.fy) / (1 + dt * rate)
+      this.lastTireDiag[wi] = res
+
+      // TC slip source: signed rear-axle slip ratio (fronts read 0, as
+      // before — TC manages driven-wheel spin only in this phase).
+      if (!w.front) {
+        totalSlip += Math.abs(res.sx)
+        rearSlipSum += res.sx
+        rearCount++
+      }
+
+      // Explicit wheel rotation with the lagged contact force (0-delay
+      // within the step) plus the viscous saturation brake. Bounded
+      // torques only: unconditionally non-explosive.
+      this.wheelDynamics.step(
+        wi,
+        dt,
+        s.driveT,
+        s.brakeM,
+        (lag.fx + legacyLong) * wheelRadius,
+        res.vx,
+      )
+
+      const fxFinal = lag.fx + legacyLong
+      const fyFinal = lag.fy
+      this.lastWheelLong[wi] = fxFinal
+      // Reaction bookkeeping: exact match to the applied chassis force
+      // (diagnostic — the rotation solve above consumed the same value).
+      this.wheelDynamics.wheels[wi].tireTorque = fxFinal * wheelRadius
+
+      const Fx = res.t.x * fxFinal + res.l.x * fyFinal
+      const Fy = res.t.y * fxFinal + res.l.y * fyFinal
+      const Fz = res.t.z * fxFinal + res.l.z * fyFinal
       const applyY = s.contactY + (s.anchor.y - s.contactY) * 0.5
       this.body.applyImpulseAtPoint(
-        { x: F.x * dt, y: 0, z: F.z * dt },
+        { x: Fx * dt, y: Fy * dt, z: Fz * dt },
         { x: s.anchor.x, y: applyY, z: s.anchor.z },
         true,
       )
@@ -576,9 +697,12 @@ export class CarController {
       ((groundedWheels > 0 ? totalSlip / 4 : 0) - this.slipRatioAvg) *
       Math.min(1, dt * 5)
     if (rearCount > 0) this.rearSlip = rearSlipSum / rearCount
-    this.spinOmega =
-      rollingOmega +
-      (this.rearSlip * Math.max(3, Math.abs(fwdSpeed) + 3)) / wheelRadius
+    // Phase 3: mean rear-wheel speed comes from the independent rotation
+    // solver (wheelspin/lock included). Hooked rolling matches rollingOmega
+    // exactly, so RPM coupling via predictedRpm/afterShift is preserved.
+    const rearOm = this.wheelDynamics.omegas()
+    this.wheelOmega = (rearOm[2] + rearOm[3]) / 2
+    this.spinOmega = this.wheelOmega
     this.drifting = Math.abs(this.lateralVelocity()) > 4.5 && speedKmh > 40
 
     const vVec = new THREE.Vector3(linvel.x, 0, linvel.z)
@@ -600,18 +724,14 @@ export class CarController {
       )
     }
 
-    const up = new THREE.Vector3(0, 1, 0).applyQuaternion(quat)
-    const tilt = new THREE.Vector3().crossVectors(
-      up,
-      new THREE.Vector3(0, 1, 0),
-    )
+    // Phase 2: artificial pitch/roll righting REMOVED. Pitch and roll
+    // moments now come only from suspension geometry (forces at anchors),
+    // tire forces, mass distribution and inertia. Yaw damping below is a
+    // separate stability-assist concern (Phase 6 territory), not chassis
+    // uprighting, so it stays.
     const angvel = this.body.angvel()
     this.body.applyTorqueImpulse(
-      {
-        x: (-tilt.x * 5500 - angvel.x * 2600) * dt,
-        y: -angvel.y * 1800 * dt,
-        z: (-tilt.z * 5500 - angvel.z * 2600) * dt,
-      },
+      { x: 0, y: -angvel.y * 1800 * dt, z: 0 },
       true,
     )
 
@@ -641,12 +761,9 @@ export class CarController {
         )
       }
     }
-    if (groundedWheels === 0) {
-      this.body.applyTorqueImpulse(
-        { x: -angvel.x * 300 * dt, y: 0, z: -angvel.z * 300 * dt },
-        true,
-      )
-    }
+    // Airborne: no active attitude control — with no contacts there is
+    // nothing physical to push against. (Phase 2: the old pitch/roll
+    // damping here was removed with the grounded uprighting torques.)
 
     const gearLabel =
       this.gear === -1 ? "R" : this.gear === 0 ? "N" : String(this.gear)
