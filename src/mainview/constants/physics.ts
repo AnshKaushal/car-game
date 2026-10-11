@@ -17,8 +17,8 @@ export const CAR_PHYSICS = {
   },
 
   engine: {
-    maxPowerHP: 800,
-    maxTorqueNm: 1000,
+    maxPowerHP: 850,
+    maxTorqueNm: 1100,
     maxPowerRPM: 7200,
     maxTorqueRPM: 3500,
     redlineRPM: 7500,
@@ -27,8 +27,8 @@ export const CAR_PHYSICS = {
     torqueCurve: [
       [0, 0.3],
       [800, 0.42],
-      [1500, 0.62],
-      [2500, 0.85],
+      [1500, 0.68],
+      [2500, 0.9],
       [3500, 1.0],
       [4500, 0.97],
       [5500, 0.93],
@@ -54,7 +54,7 @@ export const CAR_PHYSICS = {
     torqueConverter: {
       stallMultiplication: 1.7,
       lockupSpeedKmh: 25,
-      creepForce: 1200,
+      creepForce: 1350,
       creepForceReverse: 700,
     },
     autoUpshiftRPM: 7200,
@@ -136,7 +136,7 @@ export const CAR_PHYSICS = {
   },
 
   assists: {
-    tractionControl: 0.3,
+    tractionControl: 0.4,
     stabilityControl: 0.2,
     countersteerAssist: 4500,
     speedFeel: {

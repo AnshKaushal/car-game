@@ -75,6 +75,11 @@ export class CarController {
   private limiterCut = false
   private launchTimer = 0
   parkingBrake = true
+  // Clutch-feed state: seconds since the last full-throttle stab (or LC
+  // release) in 1st. Feeds torque in progressively to hook the launch.
+  private feedT = 99
+  private prevThrottle = 0
+  private prevLaunching = false
 
   steerAngle = 0
   slipRatioAvg = 0
@@ -142,6 +147,9 @@ export class CarController {
     this.gear = 1
     this.rpm = CAR_PHYSICS.engine.idleRPM
     this.shiftTimer = 0
+    this.feedT = 99
+    this.prevThrottle = 0
+    this.prevLaunching = false
     this.clutch = 1
     this.wheelOmega = 0
     this.spinOmega = 0
@@ -216,6 +224,12 @@ export class CarController {
     return base
   }
 
+  /** True when no wheel touched ground on the previous substep. */
+  private wasAirborneLastStep(): boolean {
+    const st = this.suspension.states
+    return st.length > 0 && st.every((s) => !s.grounded)
+  }
+
   getWheelCompressions(): [number, number, number, number] {
     const s = this.suspension.states
     return [
@@ -258,6 +272,20 @@ export class CarController {
     const beta = clamp(latVGlobal / Math.max(10, Math.abs(fwdSpeed)), -0.4, 0.4)
 
     if (input.throttle > 0.3) this.parkingBrake = false
+    // Automatic-transmission behaviour: foot off the brake at a standstill
+    // releases the parking brake, so torque-converter creep strolls the car
+    // forward like a real auto (see the creepForce legacyLong below). The
+    // service brake still holds the car whenever the driver is on the pedal.
+    if (
+      this.parkingBrake &&
+      this.gear >= 1 &&
+      Math.abs(fwdSpeed) < 0.5 &&
+      input.brake < 0.1 &&
+      input.throttle < 0.3 &&
+      !input.handbrake
+    ) {
+      this.parkingBrake = false
+    }
 
     const speedKmh = Math.abs(fwdSpeed) * 3.6
     const S = P.wheels.steering
@@ -325,6 +353,13 @@ export class CarController {
         )
       }
       if (this.launchArmed) targetRpm = P.transmission.launchControlRPM
+      // Airborne throttle: wheels unloaded, so the engine flares toward the
+      // limiter and the box walks up through the gears — needle climbs in
+      // flight like a real car. Uses last substep's suspension state (one
+      // substep of lag, harmless).
+      if (input.throttle > 0.1 && this.gear >= 1 && this.wasAirborneLastStep()) {
+        targetRpm = Math.max(targetRpm, P.engine.revLimiterRPM - 100)
+      }
       this.rpm += (targetRpm - this.rpm) * Math.min(1, dt * 10)
     }
 
@@ -349,11 +384,10 @@ export class CarController {
     if (this.rpm > LIM) this.rpm = LIM
 
     if (this.autoMode && this.shiftTimer <= 0 && this.gear >= 1) {
-      if (
-        input.throttle > 0.25 &&
-        this.rpm > P.transmission.autoUpshiftRPM &&
-        this.gear < 8
-      ) {
+      // Upshift whenever past the upshift point — on or off throttle — so
+      // coasting down from speed walks up the gears instead of hanging in
+      // a low gear at the limiter.
+      if (this.rpm > P.transmission.autoUpshiftRPM && this.gear < 8) {
         this.doShift(1)
       } else if (this.rpm < 1400 && this.gear > 1) {
         this.doShift(-1)
@@ -375,8 +409,10 @@ export class CarController {
     const tcGain =
       (input.handbrake ? 0 : P.assists.tractionControl) *
       (this.launching || this.launchArmed ? 0.9 : 1)
-    if (this.slipRatioAvg > 0.18) {
-      let cut = clamp((this.slipRatioAvg - 0.18) / 0.5, 0, 1)
+    // TC rides the grip peak: full cut lands just past peak slip (~0.3)
+    // instead of deep in wheelspin, so launches hook up instead of cycling.
+    if (this.slipRatioAvg > 0.15) {
+      let cut = clamp((this.slipRatioAvg - 0.15) / 0.35, 0, 1)
       if (input.throttle > 0.5 && Math.abs(beta) > 0.14 && !this.launching) {
         cut = Math.min(1, cut + clamp((Math.abs(beta) - 0.14) * 4, 0, 0.3))
       }
@@ -390,7 +426,7 @@ export class CarController {
           cut + clamp((this.slipRatioAvg - 0.15) * 2.5, 0, 0.55),
         )
       }
-      engineTorque *= lerp(1, 1 - Math.min(0.85, tcGain * 2), cut)
+      engineTorque *= lerp(1, 1 - Math.min(0.88, tcGain * 2.2), cut)
     }
     engineTorque = Math.max(0, engineTorque)
 
@@ -407,8 +443,34 @@ export class CarController {
     let driveTorquePerRear = 0
     if (this.gear !== 0) {
       const dir = this.gear === -1 ? -1 : 1
-      driveTorquePerRear = (engineTorque * gearRatio * 0.85 * tcMult * dir) / 2
+      driveTorquePerRear = (engineTorque * gearRatio * 0.9 * tcMult * dir) / 2
       if (this.launchArmed) driveTorquePerRear = 0
+      // Torque-by-gear (like every modern performance car): 1st/2nd carry
+      // far more twist than the rear tires can hold, so cap them at the
+      // grip limit instead of boiling the tires. TC stays as spike guard.
+      // Handbrake bypasses everything (burnouts/drifts need the excess).
+      if (dir > 0 && this.gear === 1 && !input.handbrake)
+        driveTorquePerRear = Math.min(driveTorquePerRear, 2400)
+      else if (dir > 0 && this.gear === 2 && !input.handbrake)
+        driveTorquePerRear = Math.min(driveTorquePerRear, 3800)
+      // Clutch feed: on a full-throttle stab (or LC clutch dump) in 1st,
+      // engage progressively over ~0.7 s instead of flash-spinning the
+      // light wheels on the initial hit.
+      if (
+        input.throttle > 0.7 &&
+        this.prevThrottle <= 0.7 &&
+        speedKmh < 30 &&
+        this.gear === 1
+      ) {
+        this.feedT = 0
+      }
+      if (this.launching && !this.prevLaunching) this.feedT = 0
+      this.feedT += dt
+      this.prevThrottle = input.throttle
+      this.prevLaunching = this.launching
+      if (dir > 0 && this.gear === 1 && input.throttle > 0.5) {
+        driveTorquePerRear *= Math.min(1, 0.25 + (0.75 * this.feedT) / 0.7)
+      }
     }
 
     const pos = this.body.translation()
@@ -549,12 +611,12 @@ export class CarController {
         input.throttle < 0.05 &&
         input.brake < 0.05 &&
         fwdSpeed > -0.5 &&
-        fwdSpeed < 3
+        fwdSpeed < 3.5
       ) {
         if (!w.front)
           legacyLong +=
             (P.transmission.torqueConverter.creepForce / 2) *
-            clamp(1 - fwdSpeed / 3, 0, 1)
+            clamp(1 - fwdSpeed / 3.5, 0, 1)
       }
       if (this.gear === -1) {
         if (
@@ -579,11 +641,13 @@ export class CarController {
         const engFric =
           P.engine.frictionTorqueBase +
           this.rpm * P.engine.frictionTorqueRPMFactor
-        const coastT = (engFric * gearRatio * 0.85 * lockup) / 2 / wheelRadius
+        const coastT = (engFric * gearRatio * 0.9 * lockup) / 2 / wheelRadius
         legacyLong += clamp(-Math.sign(res.vx) * coastT, -2500, 2500)
       }
 
       const lag = this.tireLag[wi]
+      // Relaxation rate floored so contact force exists quickly even from
+      // a standstill.
       const rate =
         (Math.abs(res.vx) + 0.5) / CAR_PHYSICS.wheels.relaxationLength
       lag.fx = (lag.fx + dt * rate * res.fx) / (1 + dt * rate)
@@ -596,19 +660,23 @@ export class CarController {
         rearCount++
       }
 
+      // NOTE: legacyLong (creep / standstill / coast offsets) pushes the
+      // CHASSIS only. Feeding it into the wheel integrator as tire torque
+      // inverts causality at idle (no shaft torque exists at idle rpm): the
+      // wheels spin against the Pacejka force until it cancels the offset
+      // and the car never strolls. Wheels just roll along via roadSpeed.
       this.wheelDynamics.step(
         wi,
         dt,
         s.driveT,
         s.brakeM,
-        (lag.fx + legacyLong) * wheelRadius,
+        lag.fx * wheelRadius,
         res.vx,
       )
 
       const fxFinal = lag.fx + legacyLong
       const fyFinal = lag.fy
       this.lastWheelLong[wi] = fxFinal
-      this.wheelDynamics.wheels[wi].tireTorque = fxFinal * wheelRadius
 
       const Fx = res.t.x * fxFinal + res.l.x * fyFinal
       const Fy = res.t.y * fxFinal + res.l.y * fyFinal
@@ -647,6 +715,67 @@ export class CarController {
         { x: drag.x * dt, y: -downF * dt, z: drag.z * dt },
         true,
       )
+    }
+    // Lift-off engine braking: off throttle in gear, the engine's own
+    // friction drags through the gearbox (friction torque × gear ratio).
+    // Kept gentle (~half the raw figure — an unlocked torque converter
+    // slips and absorbs much of it): just enough to feel the gearbox,
+    // never grabby. Only wakes up above ~6 km/h so creep owns the
+    // walking-pace zone unopposed (10 km/h stroll), and never reverses.
+    if (input.throttle < 0.05 && input.brake < 0.05 && this.gear >= 1 && vMag > 1) {
+      const engFric =
+        P.engine.frictionTorqueBase + this.rpm * P.engine.frictionTorqueRPMFactor
+      const engF =
+        Math.min((engFric * gearRatio * 0.9) / wheelRadius, 4000) *
+        0.5 *
+        clamp((speedKmh - 6) / 16, 0, 1)
+      const eb = vVec.clone().normalize().multiplyScalar(-engF)
+      this.body.applyImpulse({ x: eb.x * dt, y: 0, z: eb.z * dt }, true)
+    }
+    // GTA-style self-righting: upside down (or on a door) and nearly still,
+    // throttle/brake rolls the car around its forward axis and steering
+    // adds roll either way — hold W (and steer) to flip back onto the
+    // wheels. Strictly gated so it can never become a blender:
+    // - cuts past ~65° roof lift (upY 0.4): jumps/climbs untouched
+    // - not while plummeting (land first, then right)
+    // - never spins the roll faster than 6 rad/s (solver-safe impacts)
+    {
+      const upV = new THREE.Vector3(0, 1, 0).applyQuaternion(quat)
+      if (upV.y < 0.4 && vMag < 6) {
+        const lv = this.body.linvel()
+        if (lv.y > -8) {
+          const av = this.body.angvel()
+          const fwdV = new THREE.Vector3(0, 0, -1).applyQuaternion(quat)
+          const wFwd = av.x * fwdV.x + av.y * fwdV.y + av.z * fwdV.z
+          if (Math.abs(wFwd) < 6) {
+            const rollT =
+              (input.throttle - input.brake) * 16000 - input.steer * 9000
+            if (rollT !== 0) {
+              this.body.applyTorqueImpulse(
+                { x: fwdV.x * rollT * dt, y: fwdV.y * rollT * dt, z: fwdV.z * rollT * dt },
+                true,
+              )
+            }
+          }
+        }
+      }
+    }
+    // Solver-explosion insurance: nothing in this game legitimately moves
+    // faster than these caps. Unbounded spin/velocity is what pops bodies
+    // through colliders, so clamp both every substep.
+    {
+      const lv = this.body.linvel()
+      const sp2 = lv.x * lv.x + lv.y * lv.y + lv.z * lv.z
+      if (sp2 > 10000) {
+        const s = 100 / Math.sqrt(sp2)
+        this.body.setLinvel({ x: lv.x * s, y: lv.y * s, z: lv.z * s }, true)
+      }
+      const av = this.body.angvel()
+      const an2 = av.x * av.x + av.y * av.y + av.z * av.z
+      if (an2 > 81) {
+        const s = 9 / Math.sqrt(an2)
+        this.body.setAngvel({ x: av.x * s, y: av.y * s, z: av.z * s }, true)
+      }
     }
 
     const angvel = this.body.angvel()

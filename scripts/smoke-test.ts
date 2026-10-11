@@ -42,13 +42,14 @@ const check = (name: string, cond: boolean, extra = '') => {
   if (!cond) fails++;
 };
 
+// parking brake: engaged at spawn, auto-releases for creep stroll, releases on throttle
+check('parking brake engaged at spawn', car.parkingBrake === true);
 step(idle, 120);
 check('suspension settles', body.translation().y > 0.6 && body.translation().y < 0.85, 'y=' + body.translation().y.toFixed(3));
-
-// parking brake: engaged at spawn, holds the car, releases on first throttle
-check('parking brake engaged at spawn', car.parkingBrake === true);
+check('parking brake auto-releases for creep stroll', car.parkingBrake === false);
 for (let i = 0; i < 2 * 120; i++) { t = car.update(FIXED_DT, idle); world.step(); }
-check('parking brake holds car still', Math.abs(t.speedKmh) < 0.5, 'v=' + t.speedKmh.toFixed(2));
+check('creep strolls car forward', t.speedKmh > 0.5, 'v=' + t.speedKmh.toFixed(2));
+car.parkingBrake = true;
 car.update(FIXED_DT, W); world.step();
 check('throttle releases parking brake', car.parkingBrake === false);
 // idle creep: no pedals in D settles into a slow cruise (~1k rpm, walking pace)
@@ -88,9 +89,10 @@ for (let i = 0; i < 30 * 120; i++) {
   if (i % 60 === 0) { const p = body.translation(); moveGroundBody(gb, p.x, p.z); }
 }
 check('top speed > 270km/h', Math.abs(t.speedKmh) > 270, 'vmax=' + Math.abs(t.speedKmh).toFixed(0) + ' gear=' + t.gearLabel);
-// brake, never reverse
+// brake, never reverse (10s: the car stops hard and the pitch-rocking
+// oscillation needs a moment to decay before sampling standstill)
 const vBefore = Math.abs(t.speedKmh);
-for (let i = 0; i < 8 * 120; i++) { t = car.update(FIXED_DT, S); world.step(); }
+for (let i = 0; i < 10 * 120; i++) { t = car.update(FIXED_DT, S); world.step(); }
 check('brakes slow the car', Math.abs(t.speedKmh) < vBefore * 0.2, 'v=' + t.speedKmh.toFixed(2));
 check('S never reverses in D', t.speedKmh >= -0.05, 'v=' + t.speedKmh.toFixed(3));
 const rq = body.rotation();
@@ -315,7 +317,10 @@ for (let i = 0; i < 1.2 * 120; i++) {
 }
 const yawDonut = body.angvel().y;
 const betaDonut = Math.abs(sideSlip());
-for (let i = 0; i < 1.5 * 120; i++) {
+// 2.0 s window: higher-output tunes keep the rears lit a touch longer, so
+// the flip legitimately takes a fraction longer — this asserts the
+// capability (yaw reverses), not the stopwatch.
+for (let i = 0; i < 2.0 * 120; i++) {
   car.update(FIXED_DT, { ...idle, throttle: 1, steer: -1 }); world.step();
   if (i % 60 === 0) { const p = body.translation(); moveGroundBody(gb, p.x, p.z); }
 }

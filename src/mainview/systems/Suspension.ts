@@ -33,6 +33,10 @@ const DROOP_LIMIT = -0.06
 const BUMP_START = 0.1
 const BUMP_GAIN = 12
 const ARB_FORCE_LIMIT = 4000
+// Absolute ceiling per corner (~7x static corner load). Legit driving,
+// even hard landings, never reaches it — it exists only to bound faulty
+// inputs (sub-surface rays, velocity spikes) to non-catastrophic levels.
+const MAX_CORNER_FORCE = 30000
 
 function clamp(v: number, lo: number, hi: number) {
   return Math.max(lo, Math.min(hi, v))
@@ -116,7 +120,12 @@ export class SuspensionSystem {
       const pointVel = linvel.clone().add(angvel.clone().cross(r))
       st.pointVel.copy(pointVel)
 
-      if (!hit) {
+      if (!hit || hit.timeOfImpact < 0.05) {
+        // No hit — or the ray started INSIDE solid (solid rays report
+        // toi≈0). The latter happens when overturned/wedged with the ray
+        // origin under the terrain: treating it as full compression would
+        // fire max spring force along a body-up vector that points INTO
+        // the ground and railgun the car through the floor. Airborne it is.
         st.grounded = false
         st.compression = 0
         st.suspVel = 0
@@ -172,13 +181,24 @@ export class SuspensionSystem {
       right.arbF = -arb
     }
 
+    // Force application pass: along the suspension axis at each anchor.
+    // Two hard guards so this path can never launch the car:
+    // - MAX_CORNER_FORCE caps any single corner (~7x static load; legit
+    //   driving, even hard landings, never reaches it).
+    // - Forces only apply while roughly upright (up.y > 0.25). Past ~75°
+    //   of roll the "suspension axis" points sideways/down and pushing
+    //   along it would shove the car through the world.
+    const upY = up.y
     for (const st of this.states) {
-      if (!st.grounded) {
+      if (!st.grounded || upY < 0.25) {
         st.force = 0
         st.load = 0
         continue
       }
-      const force = Math.max(0, st.springF + st.damperF + st.arbF)
+      const force = Math.max(
+        0,
+        Math.min(MAX_CORNER_FORCE, st.springF + st.damperF + st.arbF),
+      )
       st.force = force
       st.load = force
       this.body.applyImpulseAtPoint(

@@ -124,7 +124,9 @@ const check = (name: string, cond: boolean, extra = '') => {
   const s = mk();
   const plank = s.world.createRigidBody(RAPIER.RigidBodyDesc.fixed().setTranslation(-0.76, -0.025, -1.51));
   s.world.createCollider(RAPIER.ColliderDesc.cuboid(0.5, 0.025, 0.5).setFriction(1.0), plank);
-  run(s, idle, 2);
+  // Hold the service brake: with idle-creep stroll the car would otherwise
+  // drive off the plank mid-test. This block measures static redistribution.
+  run(s, S, 2);
   const st = snap(s);
   const contactY = (i: number) => s.car.suspension.states[i].contactY;
   const othersY = (contactY(1) + contactY(2) + contactY(3)) / 3;

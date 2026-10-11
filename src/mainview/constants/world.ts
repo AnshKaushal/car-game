@@ -5,7 +5,7 @@ export const WORLD_CONFIG = {
     shoulderWidth: 2.5,
     segmentLength: 50,
     segmentsAhead: 30,
-    segmentsBehind: 5,
+    segmentsBehind: 12,
     textureScale: 10,
     maxCurvature: 0.008,
     curvatureChangeRate: 0.0003,

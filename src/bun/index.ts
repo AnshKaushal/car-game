@@ -44,8 +44,7 @@ async function autoUpdate(): Promise<void> {
       console.log("[update] applying, relaunching on the new version")
       await Updater.applyUpdate()
     }
-  } catch {
-  }
+  } catch {}
 }
 
 await autoUpdate()
@@ -79,16 +78,35 @@ const mainWindow = new BrowserWindow({
     width: 900,
     height: 700,
   },
+  titleBarStyle: "hidden",
   styleMask: {
     Miniaturizable: false,
+    FullSizeContentView: true,
   },
 })
 
 const MACOS_ESCAPE_KEYCODE = 53
 
+let lastEscapeAt = 0
+
 mainWindow.on("keyDown", (event: any) => {
   const data = event?.data ?? event
   if (data?.keyCode !== MACOS_ESCAPE_KEYCODE) return
+  if (data?.isRepeat) return
+
+  const now = Date.now()
+  const isDouble = now - lastEscapeAt < 500
+  lastEscapeAt = now
+
+  if (isDouble) {
+    try {
+      if (mainWindow.isFullScreen()) mainWindow.setFullScreen(false)
+    } catch {}
+    try {
+      mainWindow.minimize()
+    } catch {}
+    return
+  }
 
   try {
     mainWindow.webview.executeJavascript(

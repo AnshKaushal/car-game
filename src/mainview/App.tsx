@@ -218,6 +218,10 @@ export default function App() {
 
         let chaseFar = true
         let last = performance.now()
+        // Time spent inverted below terrain level — over 2 s means buried.
+        let buriedTimer = 0
+        // Consecutive frames the chassis centre ray starts inside solid.
+        let buriedFrames = 0
         const stepper = createFixedStepper()
         const camPos = new THREE.Vector3(startX, 3, 8)
         const camLook = new THREE.Vector3()
@@ -376,7 +380,22 @@ export default function App() {
           if (pausedRef.current && inp.startPressed) resumeFnRef.current()
           if (inp.toggleCameraPressed) chaseFar = !chaseFar
           const doReset = inp.resetPressed || resetRef.current
-          if (doReset) {
+          // Failsafe: below-terrain (tunneled through something) can never
+          // be driven out of — beam the car back onto the road instead of
+          // soft-locking under the world.
+          const fellOut = body.translation().y < -3
+          // Buried-but-shallow: inverted with the roof below terrain level
+          // (y<0.1; a legit roof-rest sits at ~0.17) for over 2 s means the
+          // car is inside the ground — recover it automatically.
+          const bq0 = body.rotation()
+          const upY0 = 1 - 2 * (bq0.x * bq0.x + bq0.z * bq0.z)
+          if (startedRef.current && !pausedRef.current && body.translation().y < 0.1 && upY0 < 0.3) {
+            buriedTimer += dt
+          } else {
+            buriedTimer = 0
+          }
+          if (doReset || fellOut || buriedTimer > 2) {
+            buriedTimer = 0
             resetRef.current = false
             const p = body.translation()
             const s = -p.z
@@ -423,6 +442,37 @@ export default function App() {
           const bp = body.translation()
           const carPos = new THREE.Vector3(bp.x, bp.y, bp.z)
           moveGroundBody(groundBody, bp.x, bp.z)
+          // Burial snap: one downward ray from the chassis centre. If it
+          // starts inside solid (toi≈0) for 3 straight frames, the car is
+          // inside terrain/a prop — ratchet it up until free. Never fires
+          // in legit play (centre rides ≥0.7 above surfaces, 0.17 on roof).
+          {
+            const bray = new R.Ray(
+              { x: bp.x, y: bp.y, z: bp.z },
+              { x: 0, y: -1, z: 0 },
+            )
+            const bhit = world.castRay(
+              bray as any,
+              2.0,
+              true,
+              undefined,
+              undefined,
+              undefined,
+              body as any,
+            )
+            const inside =
+              !!bhit && (bhit as unknown as { timeOfImpact: number }).timeOfImpact < 0.05
+            if (inside) {
+              buriedFrames++
+            } else {
+              buriedFrames = 0
+            }
+            if (buriedFrames >= 3) {
+              const lv = body.linvel()
+              body.setTranslation({ x: bp.x, y: bp.y + 0.8, z: bp.z }, true)
+              body.setLinvel({ x: lv.x, y: Math.max(lv.y, 0), z: lv.z }, true)
+            }
+          }
           visual.syncFromBody(
             body,
             car.steerAngle,
