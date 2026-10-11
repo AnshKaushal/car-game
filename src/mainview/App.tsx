@@ -350,8 +350,8 @@ export default function App() {
           progress: number
           finished: boolean
           finishTime: number | null
-          buriedTimer: number
-          buriedFrames: number
+          /** Seconds provably going nowhere (for last-resort teleport). */
+          stuckT: number
           /** Input computed once per frame and reused across substeps. */
           cached: DriveInput
           /** Full physics every stride-th substep (1 = every substep). */
@@ -396,8 +396,7 @@ export default function App() {
             progress: s0,
             finished: false,
             finishTime: null,
-            buriedTimer: 0,
-            buriedFrames: 0,
+            stuckT: 0,
             cached: holdInput(),
             stride: 1,
             edgeArmed: false,
@@ -671,8 +670,9 @@ export default function App() {
           // soft-locking under the world.
           const fellOut = body.translation().y < -3
           // Buried-but-shallow: inverted with the roof below terrain level
-          // (y<0.1; a legit roof-rest sits at ~0.17) for over 2 s means the
-          // car is inside the ground — recover it automatically.
+          // (y<0.1; a legit roof-rest sits at ~0.17). Throttle roll can
+          // still self-right, so this only fires after 5 s — genuinely
+          // stuck, not mid-recovery.
           const bq0 = body.rotation()
           const upY0 = 1 - 2 * (bq0.x * bq0.x + bq0.z * bq0.z)
           if (startedRef.current && !pausedRef.current && body.translation().y < 0.1 && upY0 < 0.3) {
@@ -680,7 +680,7 @@ export default function App() {
           } else {
             buriedTimer = 0
           }
-          if (doReset || fellOut || buriedTimer > 2) {
+          if (doReset || fellOut || buriedTimer > 5) {
             buriedTimer = 0
             resetRef.current = false
             const p = body.translation()
@@ -867,17 +867,24 @@ export default function App() {
                 rival.finished = true
                 rival.finishTime = raceElapsed
               }
-              const rq = rival.car.body.rotation()
-              const upY = 1 - 2 * (rq.x * rq.x + rq.z * rq.z)
-              if (rp.y < -3 || (rp.y < 0.1 && upY < 0.3 && (rival.buriedTimer += dt) > 2)) {
-                rival.buriedTimer = 0
+              // Last-resort teleport only: the AI first tries to drive out
+              // (reverse maneuver) on its own. stuckT proves it is truly
+              // going nowhere — 8 s covers multiple failed recoveries.
+              // Fell through the world (y < -3) is unrecoverable: instant.
+              const rsp = rival.car.forwardSpeed
+              const greenNow = headsUp <= 0 && countdown <= 0
+              if (greenNow && !rival.finished && Math.abs(rsp) < 1.0) {
+                rival.stuckT += dt
+              } else {
+                rival.stuckT = Math.max(0, rival.stuckT - dt * 3)
+              }
+              if (rp.y < -3 || rival.stuckT > 8) {
+                rival.stuckT = 0
                 const rs = -rp.z
                 rival.car.reset(
                   new THREE.Vector3(roadCenterX(rs), 0.72, rp.z),
                   roadDirYaw(rs),
                 )
-              } else if (rp.y >= 0.1 || upY >= 0.3) {
-                rival.buriedTimer = 0
               }
               rival.visual.syncFromBody(
                 rival.car.body,
