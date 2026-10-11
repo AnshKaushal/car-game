@@ -247,6 +247,7 @@ export class CarController {
 
     if (input.toggleModePressed) this.autoMode = !this.autoMode
     if (input.toggleLaunchPressed) this.launchEnabled = !this.launchEnabled
+    if (input.toggleParkPressed) this.parkingBrake = !this.parkingBrake
     if (this.shiftTimer > 0) this.shiftTimer -= dt
 
     if (!this.autoMode) {
@@ -271,21 +272,11 @@ export class CarController {
     const latVGlobal = linvel.x * right.x + linvel.z * right.z
     const beta = clamp(latVGlobal / Math.max(10, Math.abs(fwdSpeed)), -0.4, 0.4)
 
+    // P toggles the parking brake explicitly. Throttle over 0.3 drags it
+    // off (like an electronic park brake auto-release), but it otherwise
+    // stays exactly where the driver left it — including at a standstill
+    // with no pedals, so the car genuinely starts and stays parked.
     if (input.throttle > 0.3) this.parkingBrake = false
-    // Automatic-transmission behaviour: foot off the brake at a standstill
-    // releases the parking brake, so torque-converter creep strolls the car
-    // forward like a real auto (see the creepForce legacyLong below). The
-    // service brake still holds the car whenever the driver is on the pedal.
-    if (
-      this.parkingBrake &&
-      this.gear >= 1 &&
-      Math.abs(fwdSpeed) < 0.5 &&
-      input.brake < 0.1 &&
-      input.throttle < 0.3 &&
-      !input.handbrake
-    ) {
-      this.parkingBrake = false
-    }
 
     const speedKmh = Math.abs(fwdSpeed) * 3.6
     const S = P.wheels.steering

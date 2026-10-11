@@ -333,6 +333,17 @@ export default function Dashboard({ tele }: { tele: CarTelemetry }) {
       )}
 
       {}
+
+      {tele.parkingBrake && (
+        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 rounded-xl border border-amber-400/60 bg-black/70 px-5 py-1.5 text-center backdrop-blur">
+          <span className="text-[15px] font-bold tracking-[0.3em] text-amber-400">
+            PARK
+          </span>
+          <span className="ml-2 text-[11px] tracking-wide text-gray-300">
+            press P to release
+          </span>
+        </div>
+      )}
       <div className="absolute inset-x-0 bottom-0 flex items-end justify-between px-4 pb-4 sm:px-6 sm:pb-5">
         <div className="w-[clamp(150px,20vw,250px)]">
           <BmwDial

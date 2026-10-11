@@ -11,16 +11,40 @@ import {
   createFixedStepper,
 } from "./systems/PhysicsSystem"
 import { CarController, type CarTelemetry } from "./systems/CarController"
-import { WorldManager, roadCenterX, roadYaw } from "./systems/WorldManager"
+import { WorldManager, roadCenterX, roadDirYaw, roadYaw } from "./systems/WorldManager"
 import { CarVisual } from "./systems/CarVisual"
 import { TireSmoke } from "./systems/TireSmoke"
-import { InputManager } from "./systems/InputManager"
+import { InputManager, type DriveInput } from "./systems/InputManager"
+import { AIDriver, carProgress, holdInput, makeProfile, stripEdges, type TrafficEntry } from "./systems/AIDriver"
+import { colorHex, rivalColor } from "./systems/carTint"
+import {
+  RACE_COUNTS,
+  RACE_DISTANCES_KM,
+  emptyRace,
+  type RaceSetup,
+  type RaceSnapshot,
+  type RaceStanding,
+} from "./systems/RaceTypes"
 import Dashboard from "./ui/Dashboard"
+import { RaceHud, RaceLiveBoard, RaceMenu, RaceResults } from "./ui/RaceOverlay"
 import { SpeedLines } from "./ui/SpeedLines"
 import { CAR_PHYSICS } from "./constants/physics"
+import { WORLD_CONFIG } from "./constants/world"
 
 const clamp = (v: number, lo: number, hi: number) =>
   Math.max(lo, Math.min(hi, v))
+
+// Race-only grass thinning: at 270+ the verges are a blur, so draw a
+// fraction of the grass and spend the vertex budget on the road. Free
+// drive keeps full scenery. Set per frame; WorldManager eases toward it.
+function grassTargetFor(forwardSpeed: number, racing: boolean): number {
+  if (!racing) return 1
+  const kmh = Math.abs(forwardSpeed) * 3.6
+  if (kmh > 270) return 0.2
+  if (kmh > 200) return 0.5
+  if (kmh > 150) return 0.75
+  return 1
+}
 
 const initialTele: CarTelemetry = {
   speedKmh: 0,
@@ -75,6 +99,25 @@ export default function App() {
   const resetRef = useRef(false)
   const pauseFnRef = useRef(() => {})
   const resumeFnRef = useRef(() => {})
+  const raceSetupRef = useRef<RaceSetup | null>(null)
+  const lastRaceRef = useRef<RaceSetup | null>(null)
+  // Previous finishing order (ai index, -1 = player). Seeds next grid.
+  const prevOrderRef = useRef<number[] | null>(null)
+  const [race, setRace] = useState<RaceSnapshot>(emptyRace)
+  const [rivals, setRivals] = useState<(typeof RACE_COUNTS)[number]>(3)
+  const [distanceKm, setDistanceKm] =
+    useState<(typeof RACE_DISTANCES_KM)[number]>(5)
+  const [session, setSession] = useState(0)
+
+  // Menus need a usable mouse: the moment the race is decided, drop
+  // pointer lock and bring the cursor back so the results buttons work.
+  useEffect(() => {
+    if (race.finished) {
+      document.documentElement.style.cursor = ""
+      document.body.style.cursor = ""
+      if (document.pointerLockElement) document.exitPointerLock?.()
+    }
+  }, [race.finished])
 
   const lockCanvas = () => {
     document.documentElement.style.cursor = "none"
@@ -91,12 +134,36 @@ export default function App() {
   }
 
   const startGame = () => {
+    raceSetupRef.current = null
     startedRef.current = true
     pausedRef.current = false
     setStarted(true)
     setPaused(false)
     setLockHint(false)
+    setRace(emptyRace)
     lockCanvas()
+    // Rebuild the world so a previous race grid is cleared.
+    setSession((n) => n + 1)
+  }
+
+  const startRace = () => {
+    const next = {
+      rivals,
+      distanceM: distanceKm * 1000,
+    }
+    lastRaceRef.current = next
+    raceSetupRef.current = next
+    startedRef.current = true
+    pausedRef.current = false
+    setStarted(true)
+    setPaused(false)
+    setLockHint(false)
+    setRace(emptyRace)
+    lockCanvas()
+    // The grid is built inside the world effect — it only re-runs when
+    // `session` changes, so starting a race must bump it. Without this
+    // the race runs on the pre-built empty world and no rivals appear.
+    setSession((n) => n + 1)
   }
 
   const pauseGame = () => {
@@ -118,16 +185,35 @@ export default function App() {
     lockCanvas()
   }
 
-  const quitToMenu = () => {
+  const raceAgain = () => {
+    const last = lastRaceRef.current
+    if (!last) return
     pausedRef.current = false
-    startedRef.current = false
+    startedRef.current = true
     setPaused(false)
-    setStarted(false)
-    setLockHint(false)
+    setRace(emptyRace)
     inputRef.current?.clear()
     document.documentElement.style.cursor = ""
     document.body.style.cursor = ""
     if (document.pointerLockElement) document.exitPointerLock?.()
+    raceSetupRef.current = last
+    setSession((n) => n + 1)
+  }
+
+  const quitToMenu = () => {
+    pausedRef.current = false
+    startedRef.current = false
+    raceSetupRef.current = null
+    setPaused(false)
+    setStarted(false)
+    setLockHint(false)
+    setRace(emptyRace)
+    inputRef.current?.clear()
+    document.documentElement.style.cursor = ""
+    document.body.style.cursor = ""
+    if (document.pointerLockElement) document.exitPointerLock?.()
+    // Rebuild a clean free-drive world behind the menu.
+    setSession((n) => n + 1)
   }
 
   pauseFnRef.current = pauseGame
@@ -142,7 +228,8 @@ export default function App() {
     ;(async () => {
       try {
         const mount = mountRef.current!
-        renderer = new THREE.WebGLRenderer({ antialias: true })
+        if (disposed) return
+      renderer = new THREE.WebGLRenderer({ antialias: true })
         renderer.setSize(mount.clientWidth, mount.clientHeight)
         renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75))
         renderer.shadowMap.enabled = true
@@ -168,28 +255,175 @@ export default function App() {
         await wm.init(scene, baseUrl)
         const groundBody = wm.createPhysicsGround(R, world)
 
-        const startX = roadCenterX(0)
-        const body = createChassisBody(world, startX, 0.72, 0)
-        const yaw0 = roadYaw(0)
+        const setup = raceSetupRef.current
+        const rivalCount = setup?.rivals ?? 0
+        const raceDistance = setup?.distanceM ?? 0
+        const gridCount = 1 + rivalCount
+        const raceActiveInit = rivalCount > 0
+        // Big fields are GPU-bound (20 car models): drop render scale
+        // rather than physics rate when the grid grows.
+        const prCap = rivalCount > 8 ? 1.2 : 1.75
+        renderer!.setPixelRatio(Math.min(window.devicePixelRatio, prCap))
+        if (raceActiveInit) {
+          // Chequered finish strip across the road at the race distance.
+          const fc = document.createElement("canvas")
+          fc.width = 128
+          fc.height = 32
+          const fg = fc.getContext("2d")!
+          for (let y = 0; y < 2; y++) {
+            for (let x = 0; x < 8; x++) {
+              fg.fillStyle = (x + y) % 2 === 0 ? "#141414" : "#f2f2f2"
+              fg.fillRect(x * 16, y * 16, 16, 16)
+            }
+          }
+          const finishTex = new THREE.CanvasTexture(fc)
+          finishTex.colorSpace = THREE.SRGBColorSpace
+          finishTex.anisotropy = 4
+          const stripGeo = new THREE.PlaneGeometry(
+            WORLD_CONFIG.road.width,
+            3,
+          )
+          stripGeo.rotateX(-Math.PI / 2)
+          const strip = new THREE.Mesh(
+            stripGeo,
+            new THREE.MeshBasicMaterial({ map: finishTex }),
+          )
+          strip.position.set(roadCenterX(raceDistance), 0.04, -raceDistance)
+          strip.rotation.y = roadDirYaw(raceDistance)
+          scene.add(strip)
+        }
+        // Grid slot -> row/lane. Slot 0 is front-left, rivals fill the rest
+        // front-to-back, two per row; a lone last car is centred. Row 0 is
+        // at s=0, each row back is 7.5 m behind.
+        const gridSlot = (slot: number, total: number) => {
+          const row = Math.floor(slot / 2)
+          const loneLast = total % 2 === 1 && slot === total - 1
+          const left = slot % 2 === 0
+          return { s: -row * 7.5, lateral: loneLast ? 0 : left ? -2.15 : 2.15 }
+        }
+        // Grid order: first race is player on pole; after that, rivals
+        // line up by the previous finishing order and the player draws a
+        // random slot among them.
+        const prev = prevOrderRef.current
+        let playerSlotIdx = 0
+        let aiSlotOf: (ai: number) => number = (ai) => ai + 1
+        if (raceActiveInit && prev && prev.length > 0) {
+          const pos = new Map<number, number>()
+          prev.forEach((ai, i) => pos.set(ai, i))
+          const aiByMerit = [...Array(rivalCount).keys()].sort(
+            (a, b) => (pos.get(a) ?? 1e9) - (pos.get(b) ?? 1e9),
+          )
+          playerSlotIdx = Math.floor(Math.random() * gridCount)
+          const free = [...Array(gridCount).keys()].filter(
+            (s) => s !== playerSlotIdx,
+          )
+          const slotMap = new Map<number, number>()
+          aiByMerit.forEach((ai, i) => slotMap.set(ai, free[i]))
+          aiSlotOf = (ai) => slotMap.get(ai) ?? ai + 1
+        }
+        const yaw0 = roadDirYaw(0)
+        // Lateral offset basis stays on roadYaw: (cos, sin) of roadYaw is
+        // perpendicular to the road direction, which roadDirYaw is not.
+        const nx0 = Math.cos(roadYaw(0))
+        const nz0 = Math.sin(roadYaw(0))
+        const playerSlot = gridSlot(playerSlotIdx, gridCount)
+        const playerX = raceActiveInit
+          ? roadCenterX(playerSlot.s) + nx0 * playerSlot.lateral
+          : roadCenterX(0)
+        const playerZ = raceActiveInit
+          ? -playerSlot.s + nz0 * playerSlot.lateral
+          : 0
+        const startX = playerX
+        const body = createChassisBody(world, playerX, 0.72, playerZ)
         const q0 = new THREE.Quaternion().setFromEuler(
           new THREE.Euler(0, yaw0, 0),
         )
         body.setRotation({ x: q0.x, y: q0.y, z: q0.z, w: q0.w }, true)
         const car = new CarController(world, body, R)
 
+        interface Rival {
+          car: CarController
+          visual: CarVisual
+          ai: AIDriver
+          name: string
+          color: string
+          progress: number
+          finished: boolean
+          finishTime: number | null
+          buriedTimer: number
+          buriedFrames: number
+          /** Input computed once per frame and reused across substeps. */
+          cached: DriveInput
+          /** Full physics every stride-th substep (1 = every substep). */
+          stride: number
+          /** One-shot edges in cached may be applied on the next tick only. */
+          edgeArmed: boolean
+          /** Currently showing the full model (false = imposter). */
+          hi: boolean
+        }
+        const rivals: Rival[] = []
+        for (let i = 0; i < rivalCount; i++) {
+          const slot = aiSlotOf(i)
+          const g = gridSlot(slot, gridCount)
+          const s0 = g.s
+          const yaw = roadDirYaw(s0)
+          const nx = Math.cos(roadYaw(s0))
+          const nz = Math.sin(roadYaw(s0))
+          const rb = createChassisBody(
+            world,
+            roadCenterX(s0) + nx * g.lateral,
+            0.72,
+            -s0 + nz * g.lateral,
+          )
+          const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, yaw, 0))
+          rb.setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }, true)
+          const rc = new CarController(world, rb, R)
+          const color = rivalColor(i)
+          const vis = new CarVisual()
+          vis.castShadow = i < 2
+          try {
+            await vis.load(baseUrl, color)
+          } catch (e) {
+            console.warn("rival model failed", e)
+          }
+          scene.add(vis.group)
+          rivals.push({
+            car: rc,
+            visual: vis,
+            ai: new AIDriver(makeProfile(i)),
+            name: `M3 ${i + 1}`,
+            color: colorHex(color),
+            progress: s0,
+            finished: false,
+            finishTime: null,
+            buriedTimer: 0,
+            buriedFrames: 0,
+            cached: holdInput(),
+            stride: 1,
+            edgeArmed: false,
+            hi: true,
+          })
+        }
+
         {
           const zeroInput = {
             throttle: 0, brake: 0, steer: 0, handbrake: false,
             upshiftPressed: false, downshiftPressed: false,
             toggleModePressed: false, toggleLaunchPressed: false,
+            toggleParkPressed: false,
             resetPressed: false, toggleCameraPressed: false,
             startPressed: false, escapePressed: false,
           }
+          const allCars = [car, ...rivals.map((r) => r.car)]
           for (let i = 0; i < 120; i++) {
-            car.update(FIXED_DT, zeroInput)
+            for (const c of allCars) c.update(FIXED_DT, zeroInput)
             world.step()
           }
         }
+
+        // Every chassis in the fight — passed to the AI so it can see
+        // (and hit) the cars around it instead of only the road.
+        const allBodies = [body, ...rivals.map((r) => r.car.body)]
 
         const visual = new CarVisual()
         try {
@@ -198,6 +432,20 @@ export default function App() {
           console.warn("bmw model failed, continuing with fallback wheels", e)
         }
         scene.add(visual.group)
+
+        let raceActive = rivalCount > 0
+        let raceFinished = false
+        let raceElapsed = 0
+        // Heads-up on the grid first (cars + banner visible), then the
+        // 3-2-1 countdown, then green. Cars stay parked until green.
+        let headsUp = raceActive ? 2.6 : 0
+        let countdown = raceActive ? 3.0 : 0
+        let playerFinished = false
+        let playerFinishTime: number | null = null
+        let playerProgress = 0
+        let raceUiAcc = 0
+        let shadowAcc = 0
+        let playerDoneT = 0
 
         const smoke = new TireSmoke()
         scene.add(smoke.points)
@@ -223,6 +471,14 @@ export default function App() {
         // Consecutive frames the chassis centre ray starts inside solid.
         let buriedFrames = 0
         const stepper = createFixedStepper()
+        let substepTick = 0
+        let fpsFrames = 0
+        let fpsLast = -1
+        let frameMsAcc = 0
+        let frameMsLast = -1
+        // Dynamic resolution: float pixel ratio to hold frame budget.
+        let dynPR = prCap
+        let dynCooldown = 0
         const camPos = new THREE.Vector3(startX, 3, 8)
         const camLook = new THREE.Vector3()
         const smoothFwd = new THREE.Vector3(0, 0, -1)
@@ -362,11 +618,41 @@ export default function App() {
         }, 800)
 
         if (disposed) return
+        // Pre-warm: compile every program in the finished scene (all cars
+        // start full-detail) during load, so the first imposter→real swap
+        // mid-race is just draw calls, never a compile hitch.
+        renderer!.compile(scene, camera)
         setLoading(false)
 
         const loop = (now: number) => {
           if (disposed) return
           raf = requestAnimationFrame(loop)
+          fpsFrames++
+          if (fpsLast < 0) fpsLast = now
+          if (frameMsLast < 0) frameMsLast = now
+          frameMsAcc += now - frameMsLast
+          frameMsLast = now
+          if (now - fpsLast >= 500) {
+            const emaMs = frameMsAcc / Math.max(1, fpsFrames)
+            // Dynamic resolution: spend pixels only while under budget.
+            // Dips soften the image for a moment instead of dropping
+            // frames; open road crisps back up. Cooldown avoids hunting.
+            dynCooldown -= 1
+            if (startedRef.current && !pausedRef.current && dynCooldown <= 0) {
+              if (emaMs > 17.5 && dynPR > 0.7) {
+                dynPR = Math.max(0.7, dynPR - 0.2)
+                renderer!.setPixelRatio(Math.min(window.devicePixelRatio, dynPR))
+                dynCooldown = 2
+              } else if (emaMs < 13 && dynPR < prCap) {
+                dynPR = Math.min(prCap, dynPR + 0.1)
+                renderer!.setPixelRatio(Math.min(window.devicePixelRatio, dynPR))
+                dynCooldown = 4
+              }
+            }
+            fpsFrames = 0
+            frameMsAcc = 0
+            fpsLast = now
+          }
           let dt = (now - last) / 1000
           last = now
           dt = Math.min(dt, CAR_PHYSICS.simulation.maxFrameDt)
@@ -399,7 +685,7 @@ export default function App() {
             resetRef.current = false
             const p = body.translation()
             const s = -p.z
-            car.reset(new THREE.Vector3(roadCenterX(s), 0.72, p.z), roadYaw(s))
+            car.reset(new THREE.Vector3(roadCenterX(s), 0.72, p.z), roadDirYaw(s))
             stepper.acc = 0
           }
 
@@ -413,9 +699,47 @@ export default function App() {
 
           let t = null as null | ReturnType<typeof car.update>
           if (startedRef.current) {
+            if (raceActive && headsUp > 0) headsUp = Math.max(0, headsUp - dt)
+            else if (raceActive && countdown > 0)
+              countdown = Math.max(0, countdown - dt)
+            const racing =
+              !raceActive || (headsUp <= 0 && countdown <= 0)
+            if (raceActive && racing && !raceFinished) raceElapsed += dt
             const steps = pushFrameTime(stepper, dt)
+            // AI thinks once per frame (not per substep), and physics LOD
+            // follows distance: near cars step every substep, mid-field
+            // every 2nd, distant cars every 4th. Suspension raycasts are
+            // the dominant per-car cost, so this is where 20-car fields
+            // get their headroom back.
+            if (raceActive) {
+              const pp = body.translation()
+              // All chassis positions, once per frame — the AI shares this
+              // instead of each car re-reading every other body (N² wasm
+              // calls + object churn at 50 cars).
+              const traffic: TrafficEntry[] = allBodies.map((b) => {
+                const p = b.translation()
+                return { body: b, x: p.x, z: p.z }
+              })
+              for (const rival of rivals) {
+                rival.cached =
+                  racing && !rival.finished
+                    ? rival.ai.drive(rival.car, traffic, dt)
+                    : holdInput()
+                rival.edgeArmed = true
+                if (rival.ai.recovering) {
+                  rival.stride = 1
+                } else {
+                  const rp0 = rival.car.body.translation()
+                  const dx0 = rp0.x - pp.x
+                  const dz0 = rp0.z - pp.z
+                  const d2 = dx0 * dx0 + dz0 * dz0
+                  rival.stride = d2 < 6400 ? 1 : d2 < 40000 ? 2 : 4
+                }
+              }
+            }
             for (let i = 0; i < steps; i++) {
-              const subInp =
+              substepTick++
+              const subInp: DriveInput =
                 i === 0
                   ? inp
                   : {
@@ -424,13 +748,49 @@ export default function App() {
                       downshiftPressed: false,
                       toggleModePressed: false,
                       toggleLaunchPressed: false,
+                      toggleParkPressed: false,
                       resetPressed: false,
                       toggleCameraPressed: false,
                       startPressed: false,
                       escapePressed: false,
                     }
-              t = car.update(FIXED_DT, subInp)
+              // Live pedals pre-green so launch control can arm — but the
+              // car itself is padlocked to its grid slot until the flag
+              // drops. Revs build, LC arms, nothing moves. No jumping.
+              const playerInp = !playerFinished ? subInp : holdInput()
+              const preGreen = raceActive && !racing && !playerFinished
+              let lockT: { x: number; y: number; z: number } | null = null
+              let lockR: { x: number; y: number; z: number; w: number } | null =
+                null
+              let lockLv: { x: number; y: number; z: number } | null = null
+              let lockAv: { x: number; y: number; z: number } | null = null
+              if (preGreen) {
+                lockT = body.translation()
+                lockR = body.rotation()
+                lockLv = body.linvel()
+                lockAv = body.angvel()
+              }
+              t = car.update(FIXED_DT, playerInp)
+              if (raceActive) {
+                for (let ri = 0; ri < rivals.length; ri++) {
+                  const rival = rivals[ri]
+                  if ((substepTick + ri) % rival.stride !== 0) continue
+                  let aiInp = rival.cached
+                  if (rival.edgeArmed) {
+                    rival.edgeArmed = false
+                  } else {
+                    aiInp = stripEdges(aiInp)
+                  }
+                  rival.car.update(FIXED_DT, aiInp)
+                }
+              }
               world.step()
+              if (preGreen && lockT && lockR && lockLv && lockAv) {
+                body.setTranslation(lockT, true)
+                body.setRotation(lockR, true)
+                body.setLinvel(lockLv, true)
+                body.setAngvel(lockAv, true)
+              }
               consumeSubstep(stepper)
             }
             if (stepper.droppedTotal > 0) {
@@ -480,7 +840,162 @@ export default function App() {
             dt,
             car.getWheelCompressions(),
           )
-          wm.update(-bp.z, carPos)
+          if (raceActive) {
+            playerProgress = carProgress(body)
+            if (!playerFinished && playerProgress >= raceDistance) {
+              playerFinished = true
+              playerFinishTime = raceElapsed
+            }
+            // Mercy rule: 45 s after you finish, stragglers are scored by
+            // position (DNF). Without this one lost AI blocks the results
+            // — and the next grid — forever.
+            if (playerFinished && !raceFinished) {
+              playerDoneT += dt
+              if (playerDoneT > 45) {
+                for (const r of rivals) {
+                  if (!r.finished) {
+                    r.finished = true
+                    r.finishTime = null
+                  }
+                }
+              }
+            }
+            for (const rival of rivals) {
+              const rp = rival.car.body.translation()
+              rival.progress = carProgress(rival.car.body)
+              if (!rival.finished && rival.progress >= raceDistance) {
+                rival.finished = true
+                rival.finishTime = raceElapsed
+              }
+              const rq = rival.car.body.rotation()
+              const upY = 1 - 2 * (rq.x * rq.x + rq.z * rq.z)
+              if (rp.y < -3 || (rp.y < 0.1 && upY < 0.3 && (rival.buriedTimer += dt) > 2)) {
+                rival.buriedTimer = 0
+                const rs = -rp.z
+                rival.car.reset(
+                  new THREE.Vector3(roadCenterX(rs), 0.72, rp.z),
+                  roadDirYaw(rs),
+                )
+              } else if (rp.y >= 0.1 || upY >= 0.3) {
+                rival.buriedTimer = 0
+              }
+              rival.visual.syncFromBody(
+                rival.car.body,
+                rival.car.steerAngle,
+                rival.car.getWheelOmegas(),
+                dt,
+                rival.car.getWheelCompressions(),
+              )
+            }
+            if (!raceFinished) {
+              const order = [
+                {
+                  ai: -1,
+                  finished: playerFinished,
+                  time: playerFinishTime,
+                  progress: playerProgress,
+                },
+                ...rivals.map((r, i) => ({
+                  ai: i,
+                  finished: r.finished,
+                  time: r.finishTime,
+                  progress: r.progress,
+                })),
+              ].sort((a, b) => {
+                if (a.finished !== b.finished) return a.finished ? -1 : 1
+                if (a.finished && b.finished)
+                  return (a.time ?? Infinity) - (b.time ?? Infinity)
+                return b.progress - a.progress
+              })
+              if (order.every((p) => p.finished)) {
+                raceFinished = true
+                // Finishing order drives the next grid: rivals line up by
+                // merit, the player draws a random slot.
+                prevOrderRef.current = order.map((o) => o.ai)
+              }
+            }
+            // Distance-based shadow casters + model detail (2 Hz): you
+            // plus the 3 nearest rivals render shadows. Imposter swaps
+            // use hysteresis (out past 140, back under 100) and upgrades
+            // are staggered — at most 2 cars go imposter→real per eval —
+            // so a pack crossing the band never flips N models in one
+            // frame. Downgrades apply immediately (they only shed cost).
+            shadowAcc += dt
+            if (shadowAcc > 0.5) {
+              shadowAcc = 0
+              const ranked = rivals
+                .map((r, i) => {
+                  const rp = r.car.body.translation()
+                  const dx = rp.x - bp.x
+                  const dz = rp.z - bp.z
+                  return { i, d: dx * dx + dz * dz }
+                })
+                .sort((a, b) => a.d - b.d)
+              const nearSet = new Set(ranked.slice(0, 3).map((o) => o.i))
+              rivals.forEach((r, i) => r.visual.setCastShadow(nearSet.has(i)))
+              let upgrades = 0
+              for (const { i, d } of ranked) {
+                const r = rivals[i]
+                if (r.hi && d > 140 * 140) {
+                  r.hi = false
+                  r.visual.setDetail(false)
+                } else if (!r.hi && d < 100 * 100 && upgrades < 2) {
+                  upgrades++
+                  r.hi = true
+                  r.visual.setDetail(true)
+                }
+              }
+            }
+            raceUiAcc += dt
+            if (raceUiAcc > 0.05 || raceFinished || headsUp > 0 || countdown > 0) {
+              raceUiAcc = 0
+              const standings: RaceStanding[] = [
+                {
+                  id: "you",
+                  name: "You",
+                  color: "#e8e8e8",
+                  isPlayer: true,
+                  progressM: playerProgress,
+                  finished: playerFinished,
+                  finishTime: playerFinishTime,
+                },
+                ...rivals.map((r, i) => ({
+                  id: `ai-${i}`,
+                  name: r.name,
+                  color: r.color,
+                  isPlayer: false,
+                  progressM: r.progress,
+                  finished: r.finished,
+                  finishTime: r.finishTime,
+                })),
+              ].sort((a, b) => {
+                if (a.finished !== b.finished) return a.finished ? -1 : 1
+                if (a.finished && b.finished)
+                  return (a.finishTime ?? Infinity) - (b.finishTime ?? Infinity)
+                return b.progressM - a.progressM
+              })
+              const playerPlace = standings.findIndex((s) => s.isPlayer) + 1
+              setRace({
+                active: true,
+                finished: raceFinished,
+                distanceM: raceDistance,
+                elapsed: raceElapsed,
+                playerPlace,
+                total: gridCount,
+                standings,
+                countdown: Math.ceil(countdown),
+                phase: headsUp > 0 ? "heads" : countdown > 0 ? "count" : "go",
+                readyIn: headsUp,
+              })
+            }
+          }
+          wm.update(-bp.z, carPos, grassTargetFor(car.forwardSpeed, raceActive))
+          // Scenery shadows go off past ~210 in a race (invisible at that
+          // speed, expensive over thousands of instances), back on below
+          // ~190 so the toggle never flickers at the boundary.
+          const kmhNow = Math.abs(car.forwardSpeed) * 3.6
+          if (raceActive && kmhNow > 210) wm.setPropShadows(false)
+          else if (!raceActive || kmhNow < 190) wm.setPropShadows(true)
 
           if (startedRef.current) {
             const intensity = Math.max(
@@ -519,7 +1034,10 @@ export default function App() {
           }
           e0.lastMovementX = 0
           e0.lastMovementY = 0
-          if (!orbiting && nowS - lastOrbit > 2.5) {
+          // Auto-recenter only once the car is rolling — when parked, a
+          // moved camera stays where the driver left it.
+          const rolling = Math.abs(car.forwardSpeed) > 1.0
+          if (!orbiting && rolling && nowS - lastOrbit > 2.5) {
             const ck = 1 - Math.exp(-dt * 2.2)
             camYaw +=
               (Math.round(camYaw / (Math.PI * 2)) * Math.PI * 2 - camYaw) * ck
@@ -544,7 +1062,21 @@ export default function App() {
             .clone()
             .addScaledVector(viewDir, -dist)
             .add(new THREE.Vector3(0, height, 0))
-          camPos.copy(desired)
+          if (raceActive && headsUp > 0) {
+            // Pre-start wide shot: park the camera ahead-side of the player
+            // looking back down the grid so the whole field is visible.
+            desired
+              .copy(carPos)
+              .addScaledVector(smoothFwd, 13)
+              .add(new THREE.Vector3(7.5, 4.2, 0))
+            camLook
+              .copy(carPos)
+              .addScaledVector(smoothFwd, -9)
+              .add(new THREE.Vector3(0, 1.2, 0))
+            camera.position.copy(desired)
+            camera.lookAt(camLook)
+          } else {
+            camPos.copy(desired)
 
           const SF = CAR_PHYSICS.assists.speedFeel
           const vAbs = Math.abs(car.forwardSpeed) * 3.6
@@ -588,6 +1120,7 @@ export default function App() {
             camera.rotation.z += Math.sin(t2 * 1.7) * SF.shakeAmp * sfShake
             camera.position.x += Math.sin(t2 * 2.3) * 0.014 * sfShake
             camera.position.y += Math.sin(t2 * 3.1) * 0.012 * sfShake
+          }
           }
 
           renderer!.render(scene, camera)
@@ -637,55 +1170,45 @@ export default function App() {
         renderer.domElement.remove()
       }
     }
-  }, [])
+  }, [session])
 
   return (
     <div
-      className={`relative w-screen h-screen overflow-hidden bg-black ${started && !paused ? "cursor-none" : ""}`}
+      className={`relative w-screen h-screen overflow-hidden bg-black ${started && !paused && !race.finished ? "cursor-none" : ""}`}
     >
       <div ref={mountRef} className="absolute inset-0" />
       {}
       <SpeedLines ref={speedLinesRef} />
-      {!loading && !error && started && <Dashboard tele={tele} />}
-      {!loading && !error && started && !paused && lockHint && (
+      {!loading && !error && started && !race.finished && <Dashboard tele={tele} />}
+      {!loading && !error && started && !paused && !race.finished && (
+        <RaceHud race={race} />
+      )}
+      {!loading && !error && started && !paused && !race.finished && (
+        <RaceLiveBoard race={race} />
+      )}
+      {!loading && !error && started && !paused && !race.finished && lockHint && (
         <div className="absolute bottom-32 left-1/2 -translate-x-1/2 rounded-full border border-white/15 bg-black/70 px-5 py-2 text-[12px] tracking-wide text-gray-200 backdrop-blur">
           Click anywhere to get the mouse back
         </div>
       )}
       {!loading && !error && !started && (
-        <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-b from-black/70 via-black/55 to-black/75">
-          <div className="relative w-[420px] overflow-hidden rounded-3xl border border-white/10 bg-[#0b0e14]/90 text-center shadow-[0_30px_100px_rgba(0,0,0,0.7)] backdrop-blur-md">
-            <div className="flex h-[5px]">
-              <div className="flex-1 bg-[#51a7d5]" />
-              <div className="flex-1 bg-[#1c3d7c]" />
-              <div className="flex-1 bg-[#e30613]" />
-            </div>
-            <div className="px-10 pt-9 pb-8">
-              <div className="text-[11px] font-semibold tracking-[0.4em] text-[#8f99a8]">
-                M PERFORMANCE
-              </div>
-              <h1 className="mt-2 text-5xl font-bold tracking-tight text-white">
-                BMW M3
-              </h1>
-              <p className="mt-3 text-[14px] leading-6 text-gray-300">
-                She is warmed up and waiting outside.
-                <br />
-                Hop in and enjoy the road.
-              </p>
-              <button
-                onClick={startGame}
-                className="mt-7 w-full rounded-2xl bg-[#e30613] px-10 py-3.5 text-[15px] font-semibold tracking-wide text-white shadow-[0_10px_40px_rgba(227,6,19,0.45)] transition hover:bg-[#f01422] active:scale-[0.98]"
-              >
-                Start the engine
-              </button>
-              <div className="mt-3 text-[12px] text-gray-500">
-                or press Enter
-              </div>
-            </div>
-          </div>
-        </div>
+        <RaceMenu
+          rivals={rivals}
+          distanceKm={distanceKm}
+          onRivals={setRivals}
+          onDistance={setDistanceKm}
+          onFreeDrive={startGame}
+          onStartRace={startRace}
+        />
       )}
-      {!loading && !error && started && paused && (
+      {!loading && !error && started && race.finished && (
+        <RaceResults
+          race={race}
+          onAgain={raceAgain}
+          onMenu={quitToMenu}
+        />
+      )}
+      {!loading && !error && started && paused && !race.finished && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/55 backdrop-blur-[3px]">
           <div className="relative w-[380px] overflow-hidden rounded-3xl border border-white/10 bg-[#0b0e14]/95 text-center shadow-[0_30px_100px_rgba(0,0,0,0.7)]">
             <div className="flex h-[5px]">
