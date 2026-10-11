@@ -12,6 +12,56 @@ export function roadYaw(s: number): number {
   return Math.atan2(dx, 1)
 }
 
+/**
+ * Body yaw that faces along the road (direction of increasing s). A body
+ * with Euler yaw θ faces (-sinθ, -cosθ), while the road runs along
+ * (dx/ds, -1) — so the facing yaw is the negation of roadYaw.
+ */
+export function roadDirYaw(s: number): number {
+  return -roadYaw(s)
+}
+
+// Arc-length table: s (= -z) is NOT distance — the road swings ±180 m in
+// x, so gaps measured in z under-read by up to ~8%. This integrates
+// sqrt(1 + f'(s)²) once so progress differences convert to true metres.
+const ARC_STEP = 5
+const ARC_MIN = -500
+const ARC_MAX = 12500
+let arcTable: Float64Array | null = null
+
+function roadSlope(s: number): number {
+  return (roadCenterX(s + 2) - roadCenterX(s - 2)) / 4
+}
+
+function buildArcTable(): Float64Array {
+  const n = Math.floor((ARC_MAX - ARC_MIN) / ARC_STEP) + 1
+  const t = new Float64Array(n)
+  let acc = 0
+  for (let i = 1; i < n; i++) {
+    const sMid = ARC_MIN + (i - 0.5) * ARC_STEP
+    const fp = roadSlope(sMid)
+    acc += Math.sqrt(1 + fp * fp) * ARC_STEP
+    t[i] = acc
+  }
+  return t
+}
+
+export function roadArcLength(s: number): number {
+  if (!arcTable) arcTable = buildArcTable()
+  const c = Math.max(ARC_MIN, Math.min(ARC_MAX, s))
+  const f = (c - ARC_MIN) / ARC_STEP
+  const i = Math.floor(f)
+  const t = f - i
+  const a = arcTable[i]
+  const b = arcTable[Math.min(i + 1, arcTable.length - 1)]
+  return a + (b - a) * t
+}
+
+/** True metres along the road between two s-progress values. */
+export function roadGapM(a: number, b: number): number {
+  return roadArcLength(a) - roadArcLength(b)
+}
+
 const RIB_DIV = 16
 
 function makeRibbonGeometry(
@@ -171,6 +221,98 @@ export class WorldManager {
   private segMin = 0
   private segMax = -1
   private maxProps = 18000
+  // Incremental instance allocator: each segment owns its slots, so only
+  // changed segments ever touch the GPU. No full recompose, ever.
+  private slotFree = new Map<number, number[]>()
+  private slotHigh = new Map<number, number>()
+  private segSlots = new Map<number, { vi: number; idx: number }[]>()
+  private touchedVariants = new Set<number>()
+  // Speed-scaled grass: 0..1 draw fraction, smoothed toward target.
+  // Thinning is uniform (instance layout is effectively random), instant,
+  // and lossless — matrices persist, only the draw count moves.
+  private grassDensity = 1
+  private propShadows = true
+  // Radial shadow fade for scenery: instances beyond this distance from
+  // the car are discarded in the depth pass (no shadow), nearer ones
+  // shade normally. Per-fragment, so no popping on instance boundaries.
+  private readonly SHADOW_FADE_RADIUS = 110
+  private shadowFadeMat: THREE.MeshDepthMaterial | null = null
+
+  /**
+   * Kill/restore shadow casting on scenery (trees/rocks/props — never the
+   * cars or grass). At 200+ km/h shadow movement is invisible, but the
+   * extra depth pass over thousands of instances is not free.
+   */
+  setPropShadows(on: boolean) {
+    if (on === this.propShadows) return
+    this.propShadows = on
+    for (const pv of this.propVariants) {
+      if (pv.category === "grass" || pv.category === "cloud") continue
+      pv.im.castShadow = on
+    }
+  }
+
+  /**
+   * Shared depth material that fades scenery shadows with distance from
+   * the car. Assigned as customDepthMaterial on shadow-casting prop
+   * meshes; the uniform centre tracks the car every frame.
+   */
+  private shadowFadeMaterial(): THREE.MeshDepthMaterial {
+    if (this.shadowFadeMat) return this.shadowFadeMat
+    const mat = new THREE.MeshDepthMaterial({
+      depthPacking: THREE.RGBADepthPacking,
+    })
+    const center = this.carPos
+    const radius = this.SHADOW_FADE_RADIUS
+    mat.onBeforeCompile = (sh) => {
+      sh.uniforms.uShadowCenter = { value: center }
+      sh.uniforms.uShadowRadius = { value: radius }
+      sh.vertexShader = sh.vertexShader
+        .replace(
+          "#include <common>",
+          "#include <common>\nvarying vec3 vShadowWpos;",
+        )
+        .replace(
+          "#include <project_vertex>",
+          `#include <project_vertex>
+          #ifdef USE_INSTANCING
+            vShadowWpos = (modelMatrix * instanceMatrix * vec4(transformed, 1.0)).xyz;
+          #else
+            vShadowWpos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+          #endif`,
+        )
+      sh.fragmentShader = sh.fragmentShader
+        .replace(
+          "#include <common>",
+          `#include <common>
+          varying vec3 vShadowWpos;
+          uniform vec3 uShadowCenter;
+          uniform float uShadowRadius;`,
+        )
+        .replace(
+          "#include <clipping_planes_fragment>",
+          `#include <clipping_planes_fragment>
+          if (distance(vShadowWpos, uShadowCenter) > uShadowRadius) discard;`,
+        )
+    }
+    mat.customProgramCacheKey = () => "propShadowFade"
+    this.shadowFadeMat = mat
+    return mat
+  }
+
+  /** Hook a prop mesh into distance-faded shadows. */
+  private applyShadowFade(im: THREE.InstancedMesh) {
+    im.customDepthMaterial = this.shadowFadeMaterial()
+  }
+  // Streaming budget: at most this many new segments per frame, front
+  // (visible) first. Spreads generation cost instead of spiking.
+  private readonly SEGS_PER_FRAME = 2
+  private primed = false
+  private readonly scratchM = new THREE.Matrix4()
+  private readonly scratchQ = new THREE.Quaternion()
+  private readonly scratchE = new THREE.Euler()
+  private readonly scratchS = new THREE.Vector3()
+  private static readonly ZERO_M = new THREE.Matrix4().makeScale(0, 0, 0)
   private R?: typeof RAPIER
   private physWorld?: RAPIER.World
   private segColliders = new Map<number, RAPIER.Collider[]>()
@@ -273,7 +415,10 @@ export class WorldManager {
       m.material.map!.repeat.set(1, 1)
       m.material.map!.needsUpdate = true
       m.receiveShadow = true
-      m.frustumCulled = false
+      // Bounds are recomputed on every recycle (writeRibbon), so the
+      // renderer culls off-screen segments itself. At speed this is what
+      // keeps the road draw cost flat instead of scaling with velocity.
+      m.frustumCulled = true
       this.group.add(m)
       this.roadSegs.push({ mesh: m, s0: -999999 })
     }
@@ -311,6 +456,7 @@ export class WorldManager {
             im.castShadow = category !== "cloud" && category !== "grass"
             im.receiveShadow = category === "grass"
             im.frustumCulled = false
+            if (category === "tree") this.applyShadowFade(im)
             this.group.add(im)
             if (category === "cloud") {
               this.cloudVariants.push({ im, category, targetH })
@@ -349,6 +495,7 @@ export class WorldManager {
         im.castShadow = shadow
         im.receiveShadow = category === "grass"
         im.frustumCulled = false
+        if (category !== "grass") this.applyShadowFade(im)
         this.group.add(im)
         this.propVariants.push({ im, category, targetH })
       }
@@ -358,10 +505,27 @@ export class WorldManager {
       // Everything gets the -90° bake rotation (see bakeInstanced): the
       // sheets are thin in raw-Z, so the rotation is what lays them flat.
       // Grass (Object_116, light green): flat patches hugging the ground.
-      const g116 = bakeNodes(["Object_116"])
-      if (g116) {
-        for (const im of bakeSplit(g116, 6, 2800, { uniformScale: 0.02 }))
-          pushIM(im, "grass", 0.3, false)
+      // Grass: one ultra-simple ground-quad variant (2 tris) instead of
+      // chunked sheet geometry. Thousands of instances — vertex cost
+      // dominates, so the model is as small as it gets. Tinted patches
+      // read as grass at speed; near-field detail was never visible.
+      {
+        const grassGeo = new THREE.PlaneGeometry(7, 7)
+        grassGeo.rotateX(-Math.PI / 2)
+        const grassMat = new THREE.MeshStandardMaterial({
+          color: 0x4d7a33,
+          roughness: 1,
+        })
+        const grassIM = new THREE.InstancedMesh(grassGeo, grassMat, 12000)
+        grassIM.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+        grassIM.count = 0
+        grassIM.castShadow = false
+        // Must receive: the quads lie over the ground, so without this
+        // they paint flat-lit green straight across car/tree shadows.
+        grassIM.receiveShadow = true
+        grassIM.frustumCulled = false
+        this.group.add(grassIM)
+        this.propVariants.push({ im: grassIM, category: "grass", targetH: 0.3 })
       }
       // Rocks (Object_111, grey): flat rocky clusters.
       const g111 = bakeNodes(["Object_111"])
@@ -403,6 +567,7 @@ export class WorldManager {
       if (im) {
         im.castShadow = true
         im.frustumCulled = false
+        this.applyShadowFade(im)
         this.group.add(im)
         this.propVariants.push({ im, category: "tree", targetH: 6.5 })
       }
@@ -861,7 +1026,7 @@ export class WorldManager {
     // Grass has no colliders and casts no shadows (cheapest path).
     if (this.GRASS_ENABLED) {
     const bands = [
-      { step: 1.2, nMin: 6, nMax: 10, minD: 8, maxD: 45, base: 1.0 },
+      { step: 2.0, nMin: 4, nMax: 8, minD: 8, maxD: 45, base: 1.0 },
       { step: 4, nMin: 3, nMax: 6, minD: 45, maxD: 120, base: 1.6 },
       { step: 10, nMin: 2, nMax: 4, minD: 120, maxD: 300, base: 2.8 },
     ]
@@ -871,7 +1036,9 @@ export class WorldManager {
         const seed = Math.floor(s * 4) * 13 + seg * 30011 + 777 + gi * 7919
         const n = b.nMin + Math.floor(this.rand(seed) * (b.nMax - b.nMin + 1))
         for (let i = 0; i < n; i++) {
-          pushProp(s, seed, i + 1000 + gi * 500, b.minD, b.maxD, grassIdxs, b.base, -0.08)
+          // y=-0.04: safely above the ground plane (-0.08) so the flat
+          // quads never z-fight with it, still below tyre contact.
+          pushProp(s, seed, i + 1000 + gi * 500, b.minD, b.maxD, grassIdxs, b.base, -0.04)
           if (out.length > 900) return out
         }
       }
@@ -882,62 +1049,105 @@ export class WorldManager {
   }
 
   private ensureSegs(minSeg: number, maxSeg: number) {
-    if (
-      this.segMax >= minSeg &&
-      this.segMin <= maxSeg &&
-      this.segMin === minSeg &&
-      this.segMax === maxSeg
-    )
-      return
-    let dirty = this.segMax < 0
+    if (this.primed && this.segMax >= minSeg && this.segMin <= maxSeg) {
+      // Window already covered — return unless budgeted fill is still
+      // catching up on missing segments.
+      let complete = true
+      for (let s = minSeg; s <= maxSeg; s++) {
+        if (!this.segProps.has(s)) {
+          complete = false
+          break
+        }
+      }
+      if (complete) return
+    }
+    // Drop out-of-window segments (frees their instance slots in place).
     for (const k of [...this.segProps.keys()]) {
       if (k < minSeg || k > maxSeg) {
+        this.freeSeg(k)
         this.segProps.delete(k)
-        dirty = true
       }
     }
     let total = 0
     for (const arr of this.segProps.values()) total += arr.length
-    for (let s = minSeg; s <= maxSeg; s++) {
-      if (!this.segProps.has(s)) {
-        const arr = this.genSegProps(s)
-        if (total + arr.length > this.maxProps) break
-        total += arr.length
-        this.segProps.set(s, arr)
-        dirty = true
-      }
+    // Integrate missing segments front-first (what the camera sees), at
+    // most SEGS_PER_FRAME per call — except the very first fill, which
+    // runs synchronously inside the loading screen.
+    const missing: number[] = []
+    for (let s = maxSeg; s >= minSeg; s--) {
+      if (!this.segProps.has(s)) missing.push(s)
     }
+    const budget = this.primed ? this.SEGS_PER_FRAME : missing.length
+    for (let i = 0; i < Math.min(budget, missing.length); i++) {
+      const s = missing[i]
+      const arr = this.genSegProps(s)
+      if (total + arr.length > this.maxProps) break
+      total += arr.length
+      this.segProps.set(s, arr)
+      this.integrateSeg(s, arr)
+    }
+    this.primed = true
     this.segMin = minSeg
     this.segMax = maxSeg
-    if (!dirty) return
+    if (this.touchedVariants.size === 0) return
     this.syncPropColliders()
-    const m = new THREE.Matrix4()
-    const q = new THREE.Quaternion()
-    const e = new THREE.Euler()
-    const sc = new THREE.Vector3()
-    const counters = this.propVariants.map(() => 0)
-    const ordered = [...this.segProps.keys()].sort((a, b) => a - b)
-    for (const k of ordered) {
-      for (const t of this.segProps.get(k)!) {
-        const vi = t.variantIdx
-        const im = this.propVariants[vi]?.im
-        if (!im) continue
-        const idx = counters[vi]++
-        if (idx >= im.instanceMatrix.count) continue
-        e.set(0, t.rot, 0)
-        q.setFromEuler(e)
-        sc.set(t.scale, t.scale, t.scale)
-        m.compose(t.pos, q, sc)
-        im.setMatrixAt(idx, m)
-      }
+    for (const vi of this.touchedVariants) {
+      const pv = this.propVariants[vi]
+      if (pv) pv.im.instanceMatrix.needsUpdate = true
     }
-    this.propVariants.forEach((pv, vi) => {
-      pv.im.count = counters[vi]
-      pv.im.instanceMatrix.needsUpdate = true
-    })
+    this.touchedVariants.clear()
   }
 
-  update(carS: number, carPos: THREE.Vector3) {
+  /** Write one segment's props into owned instance slots. */
+  private integrateSeg(seg: number, arr: PropEntry[]) {
+    const slots: { vi: number; idx: number }[] = []
+    for (const t of arr) {
+      const vi = t.variantIdx
+      const pv = this.propVariants[vi]
+      if (!pv) continue
+      const im = pv.im
+      const cap = im.instanceMatrix.count
+      const free = this.slotFree.get(vi)
+      let idx: number
+      if (free && free.length > 0) {
+        idx = free.pop()!
+      } else {
+        idx = this.slotHigh.get(vi) ?? 0
+        if (idx >= cap) continue
+        this.slotHigh.set(vi, idx + 1)
+        im.count = idx + 1
+      }
+      this.scratchE.set(0, t.rot, 0)
+      this.scratchQ.setFromEuler(this.scratchE)
+      this.scratchS.set(t.scale, t.scale, t.scale)
+      this.scratchM.compose(t.pos, this.scratchQ, this.scratchS)
+      im.setMatrixAt(idx, this.scratchM)
+      slots.push({ vi, idx })
+      this.touchedVariants.add(vi)
+    }
+    this.segSlots.set(seg, slots)
+  }
+
+  /** Release a segment's slots back to the free lists (zeroed matrices). */
+  private freeSeg(seg: number) {
+    const slots = this.segSlots.get(seg)
+    this.segSlots.delete(seg)
+    if (!slots) return
+    for (const { vi, idx } of slots) {
+      const pv = this.propVariants[vi]
+      if (!pv) continue
+      pv.im.setMatrixAt(idx, WorldManager.ZERO_M)
+      let free = this.slotFree.get(vi)
+      if (!free) {
+        free = []
+        this.slotFree.set(vi, free)
+      }
+      free.push(idx)
+      this.touchedVariants.add(vi)
+    }
+  }
+
+  update(carS: number, carPos: THREE.Vector3, grassTarget = 1) {
     const W = WORLD_CONFIG
     this.carPos.copy(carPos)
     const startS =
@@ -972,6 +1182,27 @@ export class WorldManager {
         this.placeHill(h, carSeg + this.SEG_AHEAD + (h.seg % 3))
     }
     this.updateClouds(carS, carPos)
+    // Ease grass density toward target (no pops), then draw only the
+    // fraction. Buffer contents are untouched, so scaling back up is free.
+    this.grassDensity += (grassTarget - this.grassDensity) * 0.08
+    if (Math.abs(grassTarget - this.grassDensity) < 0.005) {
+      this.grassDensity = grassTarget
+    }
+    if (this.grassDensity < 0.999) {
+      for (let vi = 0; vi < this.propVariants.length; vi++) {
+        const pv = this.propVariants[vi]
+        if (pv.category !== "grass") continue
+        const high = this.slotHigh.get(vi) ?? pv.im.count
+        pv.im.count = Math.floor(high * this.grassDensity)
+      }
+    } else {
+      for (let vi = 0; vi < this.propVariants.length; vi++) {
+        const pv = this.propVariants[vi]
+        if (pv.category !== "grass") continue
+        const high = this.slotHigh.get(vi)
+        if (high !== undefined && pv.im.count !== high) pv.im.count = high
+      }
+    }
   }
 
   static sFromPos(p: THREE.Vector3) {

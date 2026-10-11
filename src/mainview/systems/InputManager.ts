@@ -7,6 +7,7 @@ export interface DriveInput {
   downshiftPressed: boolean
   toggleModePressed: boolean
   toggleLaunchPressed: boolean
+  toggleParkPressed: boolean
   resetPressed: boolean
   toggleCameraPressed: boolean
   startPressed: boolean
@@ -53,6 +54,7 @@ export class InputManager {
       c === "KeyE" ||
       c === "KeyM" ||
       c === "KeyL" ||
+      c === "KeyP" ||
       c === "KeyR" ||
       c === "KeyC"
     ) {
@@ -114,6 +116,7 @@ export class InputManager {
       downshiftPressed: edge("KeyQ"),
       toggleModePressed: edge("KeyM"),
       toggleLaunchPressed: edge("KeyL"),
+      toggleParkPressed: edge("KeyP"),
       resetPressed: edge("KeyR"),
       toggleCameraPressed: edge("KeyC"),
       startPressed: edge("Enter"),
