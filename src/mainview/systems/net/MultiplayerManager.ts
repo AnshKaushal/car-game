@@ -6,6 +6,25 @@ import type { CarTelemetry } from "../CarController"
 import type { TireSmoke } from "../TireSmoke"
 import { colorHex, rivalColor } from "../carTint"
 import { RemoteCar } from "./RemoteCar"
+import {
+  maybeLogNetDiag,
+  netDiagContactCost,
+  netDiagForgetPeer,
+  netDiagInvalid,
+  netDiagPeerEvent,
+  netDiagRecv,
+  netDiagRemoteCount,
+  netDiagRtt,
+  netDiagSend,
+  netDiagSeqAccept,
+  netDiagSeqReject,
+} from "./NetDiagnostics"
+import {
+  isAccept,
+  newSessionId,
+  PeerSessionTracker,
+  validateStatePacket,
+} from "./stateProtocol"
 import type {
   CarStatePacket,
   NetworkEventPacket,
@@ -46,6 +65,10 @@ export class MultiplayerManager {
   private lastBroadcast = 0
   private lastPing = 0
   private packetSeq = 0
+  // Phase 2: seq is monotonic within one room join only (reset per join);
+  // localSession disambiguates rejoins/restarts for receivers.
+  private localSession = ""
+  private sessions = new PeerSessionTracker()
 
   private activeScene: THREE.Scene | null = null
   private activeWorld: RAPIER.World | null = null
@@ -168,6 +191,9 @@ export class MultiplayerManager {
     this.leave()
     this.mode = "p2p"
     this.applyProfile(playerName, carColor)
+    // New sender session: seq restarts at 0, receivers tell it apart by sess.
+    this.packetSeq = 0
+    this.localSession = newSessionId()
 
     this.roomId = roomId
     console.log(`[Multiplayer P2P] Joining room "${roomId}" as ${this.localName} (${this.localId})`)
@@ -218,6 +244,7 @@ export class MultiplayerManager {
         payload: {
           name: this.localName,
           color: this.localColor,
+          session: this.localSession,
         },
       })
     }
@@ -235,6 +262,7 @@ export class MultiplayerManager {
       payload: {
         name: this.localName,
         color: this.localColor,
+        session: this.localSession,
       },
     })
 
@@ -247,6 +275,9 @@ export class MultiplayerManager {
     this.leave()
     this.mode = "lan"
     this.applyProfile(playerName, carColor)
+    // New sender session: seq restarts at 0, receivers tell it apart by sess.
+    this.packetSeq = 0
+    this.localSession = newSessionId()
 
     let url = serverAddress.trim() || "localhost:9876"
     if (!url.startsWith("ws://") && !url.startsWith("wss://")) {
@@ -290,6 +321,7 @@ export class MultiplayerManager {
         payload: {
           name: this.localName,
           color: this.localColor,
+          session: this.localSession,
         },
       })
       this.notifyPeersChanged()
@@ -311,6 +343,7 @@ export class MultiplayerManager {
             payload: {
               name: this.localName,
               color: this.localColor,
+              session: this.localSession,
             },
           })
         }
@@ -321,6 +354,7 @@ export class MultiplayerManager {
           this.handleNetworkEvent(msg.evt, senderId)
         }
       } catch (err) {
+        netDiagInvalid("lan", "parse-error")
         console.warn("[Multiplayer LAN] Parse error:", err)
       }
     }
@@ -383,12 +417,16 @@ export class MultiplayerManager {
 
       this.callbacks.onPlayerJoined?.(peer)
       this.notifyPeersChanged()
+      netDiagPeerEvent(peerId, "connect")
+      netDiagRemoteCount(this.remoteCars.size)
     }
     return peer
   }
 
   private unregisterPeer(peerId: string) {
     this.peers.delete(peerId)
+    this.sessions.reset(peerId)
+    netDiagPeerEvent(peerId, "disconnect")
     const remote = this.remoteCars.get(peerId)
     if (remote) {
       if (this.activeScene) {
@@ -402,9 +440,49 @@ export class MultiplayerManager {
     }
     this.callbacks.onPlayerLeft?.(peerId)
     this.notifyPeersChanged()
+    netDiagForgetPeer(peerId)
+    netDiagRemoteCount(this.remoteCars.size)
   }
 
   private handleStatePacket(pkt: CarStatePacket, senderId: string) {
+    // Phase 2: validate fully BEFORE any mutation, then enforce per-peer
+    // ordering. Rejected packets touch nothing — no state, no seq, no pose.
+    if (!pkt || typeof pkt !== "object") {
+      netDiagInvalid(senderId, "malformed-envelope")
+      return
+    }
+    // Local arrival time (receiver clock) — the only freshness signal.
+    const arrivalMs = performance.now()
+    const checked = validateStatePacket(pkt)
+    if (!checked.ok) {
+      netDiagInvalid(senderId, checked.reason)
+      return
+    }
+    netDiagRecv(senderId, checked.state.senderT)
+    const decision = this.sessions.evaluate(
+      senderId,
+      checked.state.sess,
+      checked.state.seq,
+    )
+    if (!isAccept(decision)) {
+      netDiagSeqReject(
+        senderId,
+        decision === "reject-duplicate"
+          ? "duplicate"
+          : decision === "reject-stale"
+            ? "stale"
+            : "stale-session",
+      )
+      return
+    }
+    netDiagSeqAccept(senderId, checked.state.seq, decision === "accept-initial")
+    if (decision === "accept-initial") {
+      // New session (or first packet): history from any previous session
+      // must not leak into the interpolation buffer. Fresh cars have an
+      // empty buffer (no-op); existing cars are cleared before appending.
+      this.remoteCars.get(senderId)?.resetInterpolation("session-start")
+    }
+
     // State can arrive before onPeerJoin/HELLO — register on demand so the
     // roster and progress tracking never miss a peer.
     if (!this.peers.has(senderId)) {
@@ -425,12 +503,13 @@ export class MultiplayerManager {
         this.activeRapier ?? undefined,
       )
       this.remoteCars.set(senderId, car)
+      netDiagRemoteCount(this.remoteCars.size)
     }
-    if (car) car.onPacket(pkt)
+    if (car) car.onPacket(checked.state, arrivalMs)
 
     const peer = this.peers.get(senderId)
     if (peer) {
-      peer.progress = pkt.progress
+      peer.progress = checked.state.progress
       peer.lastSeen = Date.now()
     }
   }
@@ -440,6 +519,11 @@ export class MultiplayerManager {
       case "HELLO": {
         // HELLO can win the race with onPeerJoin — register on demand.
         const peer = this.registerPeer(senderId)
+        // Phase 2: pre-arm the sender session (idempotent — duplicates
+        // change nothing). A rejoin's HELLO arrives ahead of its first
+        // states and lets the tracker tell the new session apart from
+        // delayed traffic of the old one.
+        this.sessions.noteSession(senderId, evt.payload?.session)
         peer.name = evt.payload?.name || peer.name
         peer.color = evt.payload?.color ?? peer.color
         peer.colorHex = colorHex(peer.color)
@@ -469,6 +553,7 @@ export class MultiplayerManager {
         if (peer) {
           const rtt = Math.max(1, Date.now() - evt.t)
           peer.pingMs = Math.round(rtt / 2)
+          netDiagRtt(senderId, rtt)
           this.notifyPeersChanged()
         }
         break
@@ -519,6 +604,7 @@ export class MultiplayerManager {
       payload: {
         name: this.localName,
         color: this.localColor,
+        session: this.localSession,
       },
     })
   }
@@ -557,6 +643,7 @@ export class MultiplayerManager {
       id: this.localId,
       t: now,
       seq: this.packetSeq++,
+      sess: this.localSession,
       x: p.x,
       y: p.y,
       z: p.z,
@@ -578,6 +665,7 @@ export class MultiplayerManager {
 
     try {
       this.sendStateAction(pkt)
+      netDiagSend()
     } catch {}
 
     // Periodic ping check
@@ -616,9 +704,19 @@ export class MultiplayerManager {
   }
 
   public updateRemoteCars(dt: number, smokeSystem?: TireSmoke) {
+    // Phase 4: sample narrow-phase contacts once per frame (not per
+    // substep) and cache per peer for drive(). Timed for overhead reporting.
+    const cs0 = performance.now()
+    for (const remote of this.remoteCars.values()) {
+      remote.sampleContacts(cs0)
+    }
+    netDiagContactCost(performance.now() - cs0)
     for (const remote of this.remoteCars.values()) {
       remote.update(dt, smokeSystem)
     }
+    netDiagRemoteCount(this.remoteCars.size)
+    // Throttled dev summary (5 s, only when netdiag is enabled). Silent otherwise.
+    maybeLogNetDiag()
   }
 
   /** Per-physics-substep ghost drive — call before every world.step(). */
@@ -652,6 +750,12 @@ export class MultiplayerManager {
     }
     this.sendStateAction = null
     this.sendEventAction = null
+    this.sessions.clear()
+    this.localSession = ""
+    for (const id of this.peers.keys()) {
+      netDiagPeerEvent(id, "cleanup")
+      netDiagForgetPeer(id)
+    }
     this.peers.clear()
 
     if (this.activeScene) {
@@ -664,6 +768,7 @@ export class MultiplayerManager {
       }
     }
     this.remoteCars.clear()
+    netDiagRemoteCount(0)
     this.detachScene()
     this.roomId = null
     this.notifyPeersChanged()

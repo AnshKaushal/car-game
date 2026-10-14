@@ -30,6 +30,8 @@ import { RaceHud, RaceLiveBoard, RaceMenu, RaceResults } from "./ui/RaceOverlay"
 import { SpeedLines } from "./ui/SpeedLines"
 import { MultiplayerManager } from "./systems/net/MultiplayerManager"
 import { MultiplayerLobby, MultiplayerHudBadge } from "./ui/MultiplayerLobby"
+import { NetDiagPanel } from "./ui/NetDiagPanel"
+import { netDiagEnabled, netDiagPhysicsTick } from "./systems/net/NetDiagnostics"
 import type { PeerPlayer } from "./systems/net/types"
 import { CAR_PHYSICS } from "./constants/physics"
 import { WORLD_CONFIG } from "./constants/world"
@@ -121,6 +123,8 @@ export default function App() {
     () => localStorage.getItem("oversteer_name") || "Racer",
   )
   const [driverColor, setDriverColor] = useState<number>(0x1f6feb)
+  // Phase 1 dev diagnostics overlay (?netdiag=1 or localStorage flag).
+  const [showNetDiag] = useState(() => netDiagEnabled())
   const multiplayerRef = useRef<MultiplayerManager | null>(null)
   if (!multiplayerRef.current) {
     multiplayerRef.current = new MultiplayerManager(driverName, driverColor)
@@ -853,6 +857,8 @@ export default function App() {
               !raceActive || (headsUp <= 0 && countdown <= 0)
             if (raceActive && racing && !raceFinished) raceElapsed += dt
             const steps = pushFrameTime(stepper, dt)
+            // Phase 1 diagnostics: physics tick rate + dropped sim time.
+            netDiagPhysicsTick(steps, stepper.droppedTotal)
             // AI thinks once per frame (not per substep), and physics LOD
             // follows distance: near cars step every substep, mid-field
             // every 2nd, distant cars every 4th. Suspension raycasts are
@@ -1392,6 +1398,7 @@ export default function App() {
       <div ref={mountRef} className="absolute inset-0" />
       {}
       <SpeedLines ref={speedLinesRef} />
+      {showNetDiag && <NetDiagPanel />}
       {!loading && !error && started && !race.finished && <Dashboard tele={tele} />}
       {!loading && !error && started && !paused && !race.finished && (
         <RaceHud race={race} />
