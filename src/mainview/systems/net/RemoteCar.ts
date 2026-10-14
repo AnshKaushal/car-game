@@ -1,6 +1,7 @@
 import * as THREE from "three"
 import type * as RAPIER from "@dimforge/rapier3d-compat"
 import { CarVisual } from "../CarVisual"
+import { createCabinCollider } from "../PhysicsSystem"
 import { CAR_PHYSICS } from "../../constants/physics"
 import type { TireSmoke } from "../TireSmoke"
 import type { ValidatedState } from "./stateProtocol"
@@ -172,6 +173,16 @@ export class RemoteCar {
           .setRestitution(0.2)
         // Kept for Phase 4 contact queries (narrow-phase only, read-only).
         this.collider = world.createCollider(colDesc, this.colliderBody)
+        // Cabin volume, matching the local chassis (see PhysicsSystem):
+        // without it a flipped ghost settles on the slab and its roof
+        // renders underground. Same low car-vs-car friction as the slab.
+        world.createCollider(
+          createCabinCollider(rapier)
+            .setFriction(0.15)
+            .setFrictionCombineRule(rapier.CoefficientCombineRule.Min)
+            .setRestitution(0.2),
+          this.colliderBody,
+        )
       } catch (e) {
         console.warn(`[RemoteCar] Failed to create body for ${name}:`, e)
         this.colliderBody = null

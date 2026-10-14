@@ -140,7 +140,7 @@ export const CAR_PHYSICS = {
     stabilityControl: 0.2,
     countersteerAssist: 4500,
     speedFeel: {
-      fovBase: 60,
+      fovBase: 68,
       fovMax: 104,
       fovAtMaxSpeedKmh: 330,
       linesStrength: 0.85,

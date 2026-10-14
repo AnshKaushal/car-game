@@ -1,1 +1,11 @@
 @import "tailwindcss";
+
+/* Scrollable panels (race tower, results, paddock roster): keep scrolling,
+   never show a scrollbar — Windows draws chunky always-visible bars. */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}

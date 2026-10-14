@@ -605,7 +605,6 @@ export default function App() {
         const camPos = new THREE.Vector3(startX, 3, 8)
         const camLook = new THREE.Vector3()
         const smoothFwd = new THREE.Vector3(0, 0, -1)
-        let lookAheadSm = 6
 
         let camYaw = 0
         let camPitch = 0
@@ -695,7 +694,7 @@ export default function App() {
             lastPX = e.clientX
             lastPY = e.clientY
             camYaw -= dx * 0.0052
-            camPitch = Math.max(-0.15, Math.min(0.5, camPitch + dy * 0.0032))
+            camPitch = Math.max(-0.5, Math.min(0.5, camPitch + dy * 0.0032))
             lastOrbit = performance.now() / 1000
           }
         }
@@ -1206,7 +1205,7 @@ export default function App() {
             const my = Math.max(-MAXD, Math.min(MAXD, e0.lastMovementY))
             if (mx !== 0 || my !== 0) {
               camYaw -= mx * 0.0022
-              camPitch = Math.max(-0.15, Math.min(0.5, camPitch + my * 0.0022))
+              camPitch = Math.max(-0.5, Math.min(0.5, camPitch + my * 0.0022))
               lastOrbit = nowS
             }
           }
@@ -1240,6 +1239,10 @@ export default function App() {
             .clone()
             .addScaledVector(viewDir, -dist)
             .add(new THREE.Vector3(0, height, 0))
+          // Deep downward orbits would drive the camera under the road:
+          // floor it just below the car and above the ground plane. The
+          // look target is still the car centre, so it stays centered.
+          desired.y = Math.max(desired.y, carPos.y - 0.9, 0.3)
           if (raceActive && headsUp > 0) {
             // Pre-start wide shot: park the camera ahead-side of the player
             // looking back down the grid so the whole field is visible.
@@ -1262,7 +1265,7 @@ export default function App() {
           const offAxis = clamp(Math.abs(camYaw) / (Math.PI / 2), 0, 1)
           const fovCeil =
             SF.fovBase + (SF.fovMax - SF.fovBase) * (1 - offAxis * 0.55)
-          const targetFov = SF.fovBase + (fovCeil - SF.fovBase) * sfFov * sfFov
+          const targetFov = SF.fovBase + (fovCeil - SF.fovBase) * sfFov
           if (Math.abs(camera.fov - targetFov) > 0.02) {
             camera.fov += (targetFov - camera.fov) * Math.min(1, dt * 3.5)
             camera.updateProjectionMatrix()
@@ -1278,10 +1281,12 @@ export default function App() {
             ),
           )
 
-          const tgtLookAhead = 6 * Math.max(0, Math.cos(camYaw))
-          lookAheadSm += (tgtLookAhead - lookAheadSm) * (1 - Math.exp(-dt * 8))
-          camLook.copy(carPos).addScaledVector(smoothFwd, lookAheadSm)
-          camLook.y += 0.92 + Math.max(0, camPitch) * 1.8
+          // Center-anchored on both axes: the look target IS the car's
+          // centre (physics origin ~= visual bbox centre). lookAt pins
+          // that point to the exact screen centre, so any Y trim here
+          // would push the car off-centre vertically — orbit pitch only
+          // moves the camera height (see `desired` above), never this.
+          camLook.copy(carPos)
           camera.position.copy(camPos)
           camera.lookAt(camLook)
 

@@ -11,6 +11,9 @@ export const SUSP_VISUAL_REF = 0.074
 let sharedModel: THREE.Object3D | null = null
 let sharedLoad: Promise<THREE.Object3D | null> | null = null
 
+// Scratch vector for the body-space origin drop in syncFromPose.
+const _poseOff = new THREE.Vector3()
+
 // Low-poly imposter kit: shared across every car, ~200 tris total.
 // Distant rivals render this (2 draw calls) instead of the full GLB.
 let loBodyGeo: THREE.BufferGeometry | null = null
@@ -388,8 +391,13 @@ export class CarVisual {
     dt: number,
     compressions?: readonly number[],
   ) {
-    this.group.position.set(pos.x, pos.y - 0.72, pos.z)
+    // The -0.72 origin drop must ride in BODY space, not world space:
+    // applied in world Y it stays correct only while upright. Rolled or
+    // flipped, a world-space drop shoves the whole model down through
+    // the ground while the physics body correctly rests on its roof.
     this.group.quaternion.set(rot.x, rot.y, rot.z, rot.w)
+    _poseOff.set(0, -0.72, 0).applyQuaternion(this.group.quaternion)
+    this.group.position.set(pos.x + _poseOff.x, pos.y + _poseOff.y, pos.z + _poseOff.z)
 
     for (let i = 0; i < this.wheels.length; i++) {
       const w = this.wheels[i]

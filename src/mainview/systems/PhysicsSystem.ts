@@ -56,7 +56,24 @@ export function createChassisBody(
     .setFriction(0.4)
     .setRestitution(0.1)
   world.createCollider(col, body)
+  world.createCollider(createCabinCollider(RAPIER_), body)
   return body
+}
+
+/**
+ * Cabin/roof volume the chassis slab doesn't cover (slab top is at
+ * body-local +0.22; the visual roof is at ~+0.69). Without it a flipped
+ * car settles on the slab at body y≈0.22 and the rendered roof ends up
+ * ~0.45 m underground. With it the car rests on its roof at y≈0.69,
+ * matching the visual. Upright it only fills the previously hollow
+ * cabin, so door-height side contacts now land instead of clipping.
+ * Mass comes from default density (~2 kg) — dynamics unchanged.
+ */
+export function createCabinCollider(RAPIER_: typeof RAPIER) {
+  return RAPIER_.ColliderDesc.cuboid(0.75, 0.33, 1.05)
+    .setTranslation(0, 0.36, 0.2)
+    .setFriction(0.4)
+    .setRestitution(0.1)
 }
 
 export function stepWorld(world: RAPIER.World, dt: number) {

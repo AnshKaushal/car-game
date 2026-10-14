@@ -232,7 +232,7 @@ export function RaceLiveBoard({ race }: { race: RaceSnapshot }) {
       </div>
       <div
         ref={scrollRef}
-        className="pointer-events-auto max-h-[46vh] overflow-y-auto rounded-xl pr-0.5 [scrollbar-width:thin]"
+        className="pointer-events-auto max-h-[46vh] overflow-y-auto rounded-xl pr-0.5 no-scrollbar"
       >
         <div className="relative" style={{ height: snap.length * BOARD_ROW_H }}>
           {snap.map((s, i) => (
@@ -300,7 +300,7 @@ export function RaceResults({
               ? ` · ${formatTime(player.finishTime)}`
               : ""}
           </p>
-          <ol className="mt-5 max-h-[38vh] space-y-1.5 overflow-y-auto pr-1 [scrollbar-width:thin]">
+          <ol className="mt-5 max-h-[38vh] space-y-1.5 overflow-y-auto pr-1 no-scrollbar">
             {race.standings.map((row, i) => (
               <li
                 key={row.id}
