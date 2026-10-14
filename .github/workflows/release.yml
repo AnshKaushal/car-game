@@ -64,6 +64,7 @@ jobs:
         run: |
           installer="$RUNNER_TEMP/install-hutch.sh"
           curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+            --retry 3 --retry-delay 5 \
             https://hutch.blackboard.sh/hutch/install.sh --output "$installer"
           sh "$installer" --channel production --no-modify-path
           echo "$HOME/.hutch/bin" >> "$GITHUB_PATH"
@@ -73,8 +74,27 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $script = irm https://hutch.blackboard.sh/hutch/install.ps1
-          & ([scriptblock]::Create($script))
+          # Session-wide: speeds up Invoke-WebRequest (including the ones
+          # inside install.ps1) and avoids progress-stream overhead.
+          $ProgressPreference = "SilentlyContinue"
+          # The vendor installer downloads release archives that can hit
+          # transient connection resets ("forcibly closed by the remote
+          # host"). Retry the whole install — it is idempotent.
+          $attempt = 0
+          $maxAttempts = 4
+          while ($true) {
+            $attempt++
+            try {
+              $script = irm https://hutch.blackboard.sh/hutch/install.ps1
+              & ([scriptblock]::Create($script))
+              break
+            } catch {
+              if ($attempt -ge $maxAttempts) { throw }
+              $wait = 10 * $attempt
+              Write-Warning "Hutch install attempt $attempt failed: $($_.Exception.Message). Retrying in ${wait}s..."
+              Start-Sleep -Seconds $wait
+            }
+          }
           $hutchDir = "$env:USERPROFILE\.hutch\bin"
           if (!(Test-Path "$hutchDir\hutch.exe")) {
             throw "Hutch was installed but could not be found at $hutchDir\hutch.exe"
