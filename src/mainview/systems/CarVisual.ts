@@ -66,14 +66,22 @@ export class CarVisual {
   private hiBody: THREE.Object3D | null = null
   private loGroup: THREE.Group | null = null
   private hiDetail = true
+  /** Paint material clones created by tintCar — recolored live by setTint. */
+  private tintedMats: THREE.MeshStandardMaterial[] = []
+  /** Imposter body paint, kept in sync with the hi-detail tint. */
+  private loPaint: THREE.MeshStandardMaterial | null = null
+  /** Newest requested tint; applied at load end if it landed mid-load. */
+  private lastTint: number | undefined = undefined
   /** Merged static meshes (body + per-wheel) shown in hi detail. */
   private hiMerged: THREE.Object3D[] = []
 
   async load(baseUrl: string, tint?: number): Promise<void> {
     const source = await loadSharedModel(baseUrl)
     if (!source) throw new Error("Model not loaded")
+    // A setTint() may have landed while the model was loading — newest wins.
+    const effective = this.lastTint ?? tint
     const model = source.clone(true)
-    if (tint !== undefined) tintCar(model, tint)
+    this.tintedMats = effective !== undefined ? tintCar(model, effective) : []
     model.traverse((o: any) => {
       if (o.isMesh) {
         o.castShadow = this.castShadow
@@ -100,7 +108,7 @@ export class CarVisual {
     model.position.y -= boxA.min.y
     this.group.add(model)
     this.hiBody = model
-    this.buildImposter(tint)
+    this.buildImposter(this.lastTint ?? tint)
 
     this.group.updateMatrixWorld(true)
     const wheelGroups: THREE.Object3D[] = []
@@ -194,6 +202,7 @@ export class CarVisual {
       roughness: 0.6,
       metalness: 0.3,
     })
+    this.loPaint = paint
     const glass = new THREE.MeshStandardMaterial({
       color: 0x101418,
       roughness: 0.25,
@@ -335,6 +344,18 @@ export class CarVisual {
     })
   }
 
+  /**
+   * Recolor body paint live (hi-detail clones, merged meshes sharing them,
+   * and the imposter). Safe to call before load finishes — the newest tint
+   * is applied when loading completes.
+   */
+  setTint(color: number) {
+    this.lastTint = color
+    const c = new THREE.Color(color)
+    for (const m of this.tintedMats) m.color.copy(c)
+    this.loPaint?.color.copy(c)
+  }
+
   wheelContactPositions(    includeFront: boolean,
     out: THREE.Vector3[],
   ): THREE.Vector3[] {
@@ -356,8 +377,19 @@ export class CarVisual {
   ) {
     const t = body.translation()
     const r = body.rotation()
-    this.group.position.set(t.x, t.y - 0.72, t.z)
-    this.group.quaternion.set(r.x, r.y, r.z, r.w)
+    this.syncFromPose(t, r, steerAngle, wheelOmegas, dt, compressions)
+  }
+
+  syncFromPose(
+    pos: { x: number; y: number; z: number },
+    rot: { x: number; y: number; z: number; w: number },
+    steerAngle: number,
+    wheelOmegas: readonly number[],
+    dt: number,
+    compressions?: readonly number[],
+  ) {
+    this.group.position.set(pos.x, pos.y - 0.72, pos.z)
+    this.group.quaternion.set(rot.x, rot.y, rot.z, rot.w)
 
     for (let i = 0; i < this.wheels.length; i++) {
       const w = this.wheels[i]

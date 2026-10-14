@@ -36,6 +36,7 @@ export function RaceMenu({
   onDistance,
   onFreeDrive,
   onStartRace,
+  onOpenMultiplayer,
 }: {
   rivals: number
   distanceKm: number
@@ -43,6 +44,7 @@ export function RaceMenu({
   onDistance: (km: (typeof RACE_DISTANCES_KM)[number]) => void
   onFreeDrive: () => void
   onStartRace: () => void
+  onOpenMultiplayer?: () => void
 }) {
   return (
     <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-b from-black/70 via-black/55 to-black/75">
@@ -56,12 +58,12 @@ export function RaceMenu({
             BMW M3
           </h1>
           <p className="mt-3 text-[14px] leading-6 text-gray-300">
-            Take the road alone, or line up against other M3s.
+            Take the road alone, line up against AI, or race friends online.
           </p>
 
           <div className="mt-6 text-left">
             <div className="text-[11px] font-semibold tracking-[0.22em] text-[#8f99a8]">
-              RIVALS
+              RIVALS (AI)
             </div>
             <div className="mt-2 flex flex-wrap gap-1.5">
               {RACE_COUNTS.map((n) => (
@@ -100,15 +102,24 @@ export function RaceMenu({
 
           <button
             onClick={onStartRace}
-            className="mt-7 w-full rounded-2xl bg-[#e30613] px-10 py-3.5 text-[15px] font-semibold tracking-wide text-white shadow-[0_10px_40px_rgba(227,6,19,0.45)] transition hover:bg-[#f01422] active:scale-[0.98]"
+            className="mt-6 w-full rounded-2xl bg-[#e30613] px-10 py-3.5 text-[15px] font-semibold tracking-wide text-white shadow-[0_10px_40px_rgba(227,6,19,0.45)] transition hover:bg-[#f01422] active:scale-[0.98]"
           >
-            Start the race
+            Start Singleplayer Race
           </button>
+          {onOpenMultiplayer && (
+            <button
+              onClick={onOpenMultiplayer}
+              className="mt-2.5 w-full rounded-2xl border border-[#51a7d5]/40 bg-[#51a7d5]/15 px-6 py-3 text-[14px] font-semibold text-[#6ec2f0] transition hover:bg-[#51a7d5]/25 active:scale-[0.98] flex items-center justify-center gap-2"
+            >
+              <span className="h-2 w-2 rounded-full bg-[#51a7d5] animate-pulse" />
+              Multiplayer Lobby (P2P)
+            </button>
+          )}
           <button
             onClick={onFreeDrive}
             className="mt-2.5 w-full rounded-2xl border border-white/12 bg-white/5 px-6 py-3 text-[14px] font-medium text-gray-100 transition hover:bg-white/10 active:scale-[0.98]"
           >
-            Just drive
+            Just drive (Free Roam)
           </button>
           <div className="mt-3 text-[12px] text-gray-500">
             Enter starts a free drive · P toggles the parking brake

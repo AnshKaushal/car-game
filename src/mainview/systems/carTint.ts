@@ -18,9 +18,15 @@ function isPaintMaterial(mat: THREE.Material, meshName: string): boolean {
   return max > 0.15 && max - min < 0.18 && c.b >= c.r * 0.7
 }
 
-/** Clone materials and recolor body panels so opponents read as different cars. */
-export function tintCar(root: THREE.Object3D, color: number) {
+/** Clone materials and recolor body panels so opponents read as different cars.
+ * Returns the tinted clones so callers can recolor later (e.g. when a peer
+ * changes paint after joining — see RemoteCar.setColor). */
+export function tintCar(
+  root: THREE.Object3D,
+  color: number,
+): THREE.MeshStandardMaterial[] {
   const tint = new THREE.Color(color)
+  const tinted: THREE.MeshStandardMaterial[] = []
   root.traverse((o) => {
     const mesh = o as THREE.Mesh
     if (!mesh.isMesh || !mesh.material) return
@@ -37,11 +43,13 @@ export function tintCar(root: THREE.Object3D, color: number) {
           clone.roughness = Math.min(clone.roughness ?? 0.4, 0.45)
         }
       }
+      tinted.push(clone)
       return clone
     })
     if (!changed) return
     mesh.material = Array.isArray(mesh.material) ? next : next[0]
   })
+  return tinted
 }
 
 export const RIVAL_COLORS = [

@@ -28,6 +28,9 @@ import {
 import Dashboard from "./ui/Dashboard"
 import { RaceHud, RaceLiveBoard, RaceMenu, RaceResults } from "./ui/RaceOverlay"
 import { SpeedLines } from "./ui/SpeedLines"
+import { MultiplayerManager } from "./systems/net/MultiplayerManager"
+import { MultiplayerLobby, MultiplayerHudBadge } from "./ui/MultiplayerLobby"
+import type { PeerPlayer } from "./systems/net/types"
 import { CAR_PHYSICS } from "./constants/physics"
 import { WORLD_CONFIG } from "./constants/world"
 
@@ -108,6 +111,85 @@ export default function App() {
   const [distanceKm, setDistanceKm] =
     useState<(typeof RACE_DISTANCES_KM)[number]>(5)
   const [session, setSession] = useState(0)
+
+  const [showMultiplayerLobby, setShowMultiplayerLobby] = useState(false)
+  const [netPeers, setNetPeers] = useState<PeerPlayer[]>([])
+  const [netConnected, setNetConnected] = useState(false)
+  const [joinError, setJoinError] = useState<string | null>(null)
+  const [netRoomId, setNetRoomId] = useState("paddock-1")
+  const [driverName, setDriverName] = useState(
+    () => localStorage.getItem("oversteer_name") || "Racer",
+  )
+  const [driverColor, setDriverColor] = useState<number>(0x1f6feb)
+  const multiplayerRef = useRef<MultiplayerManager | null>(null)
+  if (!multiplayerRef.current) {
+    multiplayerRef.current = new MultiplayerManager(driverName, driverColor)
+  }
+
+  useEffect(() => {
+    const net = multiplayerRef.current
+    if (!net) return
+    net.setCallbacks({
+      onPeersUpdated: (peers) => {
+        setNetPeers([...peers])
+        setNetConnected(!!net.roomId)
+      },
+      onJoinError: (msg) => {
+        setJoinError(msg)
+        setNetConnected(false)
+      },
+      onRaceStartSignal: (_startTimeMs, distanceM) => {
+        const next = {
+          rivals: 0,
+          distanceM,
+        }
+        lastRaceRef.current = next
+        raceSetupRef.current = next
+        startedRef.current = true
+        pausedRef.current = false
+        setStarted(true)
+        setPaused(false)
+        setShowMultiplayerLobby(false)
+        setRace(emptyRace)
+        lockCanvas()
+        setSession((n) => n + 1)
+      },
+    })
+  }, [])
+
+  const handleStartMultiplayerRace = (distKm: number) => {
+    const distM = distKm * 1000
+    multiplayerRef.current?.startMultiplayerRace(distM)
+  }
+
+  const handleStartFreeDrive = () => {
+    setShowMultiplayerLobby(false)
+    startGame()
+  }
+
+  const handleLeaveRoom = () => {
+    multiplayerRef.current?.leave()
+    setNetConnected(false)
+    setNetRoomId("")
+    setNetPeers([])
+    setJoinError(null)
+  }
+
+  useEffect(() => {
+    const handleGlobalKey = (e: KeyboardEvent) => {
+      if (
+        (e.metaKey || e.ctrlKey) &&
+        e.shiftKey &&
+        (e.key === "N" || e.key === "n")
+      ) {
+        fetch("http://localhost:9876/open-window", { method: "POST" }).catch(
+          () => {},
+        )
+      }
+    }
+    window.addEventListener("keydown", handleGlobalKey)
+    return () => window.removeEventListener("keydown", handleGlobalKey)
+  }, [])
 
   // Menus need a usable mouse: the moment the race is decided, drop
   // pointer lock and bring the cursor back so the results buttons work.
@@ -253,13 +335,41 @@ export default function App() {
         const base = import.meta.env.BASE_URL || "./"
         const baseUrl = base.endsWith("/") ? base : base + "/"
         await wm.init(scene, baseUrl)
+        // Aborted while models loaded (StrictMode remount / HMR / session
+        // switch): never attach this dead-end world — a late attach would
+        // leave net peers owning bodies in a world that is about to leak,
+        // and their teardown throws inside Rapier and blanks the window.
+        if (disposed) {
+          try {
+            world.free()
+          } catch {}
+          return
+        }
         const groundBody = wm.createPhysicsGround(R, world)
+
+        const net = multiplayerRef.current
+        if (net) {
+          net.attachScene(scene, baseUrl, world, R)
+        }
 
         const setup = raceSetupRef.current
         const rivalCount = setup?.rivals ?? 0
         const raceDistance = setup?.distanceM ?? 0
-        const gridCount = 1 + rivalCount
-        const raceActiveInit = rivalCount > 0
+        const isNetRace = !!(net && net.roomId && raceDistance > 0)
+        const netPeerCount = net?.peers.size ?? 0
+        // Deterministic spawn order shared by every window in the room:
+        // sorted ids give each peer a unique index with no host required.
+        // Used for races AND free drive — without it all locals spawn at
+        // the exact same spot and the physics solver launches one of them.
+        const netIds =
+          net && net.roomId
+            ? [net.localId, ...Array.from(net.peers.keys())].sort()
+            : null
+        const netIndex =
+          net && netIds ? Math.max(0, netIds.indexOf(net.localId)) : 0
+        const netTotal = netIds ? netIds.length : 1
+        const gridCount = 1 + rivalCount + (isNetRace ? netPeerCount : 0)
+        const raceActiveInit = rivalCount > 0 || isNetRace
         // Big fields are GPU-bound (20 car models): drop render scale
         // rather than physics rate when the grid grows.
         const prCap = rivalCount > 8 ? 1.2 : 1.75
@@ -307,7 +417,9 @@ export default function App() {
         const prev = prevOrderRef.current
         let playerSlotIdx = 0
         let aiSlotOf: (ai: number) => number = (ai) => ai + 1
-        if (raceActiveInit && prev && prev.length > 0) {
+        if (isNetRace && net) {
+          playerSlotIdx = netIndex
+        } else if (raceActiveInit && prev && prev.length > 0) {
           const pos = new Map<number, number>()
           prev.forEach((ai, i) => pos.set(ai, i))
           const aiByMerit = [...Array(rivalCount).keys()].sort(
@@ -326,11 +438,16 @@ export default function App() {
         // perpendicular to the road direction, which roadDirYaw is not.
         const nx0 = Math.cos(roadYaw(0))
         const nz0 = Math.sin(roadYaw(0))
-        const playerSlot = gridSlot(playerSlotIdx, gridCount)
-        const playerX = raceActiveInit
+        const playerSlot = raceActiveInit
+          ? gridSlot(playerSlotIdx, gridCount)
+          : netIds
+            ? gridSlot(netIndex, Math.max(netTotal, 2))
+            : { s: 0, lateral: 0 }
+        const spawned = raceActiveInit || !!netIds
+        const playerX = spawned
           ? roadCenterX(playerSlot.s) + nx0 * playerSlot.lateral
           : roadCenterX(0)
-        const playerZ = raceActiveInit
+        const playerZ = spawned
           ? -playerSlot.s + nz0 * playerSlot.lateral
           : 0
         const startX = playerX
@@ -403,6 +520,13 @@ export default function App() {
             hi: true,
           })
         }
+        // Model loads above can outlive this setup (see wm.init guard).
+        if (disposed) {
+          try {
+            world.free()
+          } catch {}
+          return
+        }
 
         {
           const zeroInput = {
@@ -426,13 +550,19 @@ export default function App() {
 
         const visual = new CarVisual()
         try {
-          await visual.load(baseUrl)
+          await visual.load(baseUrl, net?.roomId ? net.localColor : undefined)
         } catch (e) {
           console.warn("bmw model failed, continuing with fallback wheels", e)
         }
+        if (disposed) {
+          try {
+            world.free()
+          } catch {}
+          return
+        }
         scene.add(visual.group)
 
-        let raceActive = rivalCount > 0
+        let raceActive = rivalCount > 0 || isNetRace
         let raceFinished = false
         let raceElapsed = 0
         // Heads-up on the grid first (cars + banner visible), then the
@@ -454,6 +584,12 @@ export default function App() {
         const input = new InputManager()
         input.attach()
         inputRef.current = input
+        // Blur (clicking the other window) sends keyup there — without this
+        // a held key sticks forever and the unfocused car drives itself.
+        const onWinBlur = () => {
+          input.clear()
+        }
+        window.addEventListener("blur", onWinBlur)
         let hadLock = false
 
         const onResize = () => {
@@ -591,11 +727,22 @@ export default function App() {
             lockWanted = false
             if (hadLock && startedRef.current && !pausedRef.current) {
               hadLock = false
-              pauseFnRef.current()
+              // Multiplayer: losing the lock because the window blurred
+              // (side-by-side testing, alt-tab) must NOT freeze the car — a
+              // paused client stops broadcasting and becomes a concrete
+              // pillar on everyone else's screen. Coast with cleared inputs
+              // instead. Esc keeps focus, so it still pauses as usual.
+              if (multiplayerRef.current?.roomId && !document.hasFocus()) {
+                input.clear()
+              } else {
+                pauseFnRef.current()
+              }
             }
           }
+          // Shown whenever driving without the mouse (post-blur coast as
+          // well as a denied lock request), not just after a lost lock.
           setLockHint(
-            startedRef.current && !pausedRef.current && !mouseLocked && hadLock,
+            startedRef.current && !pausedRef.current && !mouseLocked,
           )
         }
         dom.addEventListener("pointerdown", onPointerDown)
@@ -784,6 +931,10 @@ export default function App() {
                   rival.car.update(FIXED_DT, aiInp)
                 }
               }
+              // Shared-physics ghosts: velocity-drive remotes toward their
+              // authoritative poses BEFORE stepping, so car-vs-car contacts
+              // resolve dynamic-vs-dynamic and shoves land on both cars.
+              if (net && net.roomId) net.driveRemoteBodies(FIXED_DT)
               world.step()
               if (preGreen && lockT && lockR && lockLv && lockAv) {
                 body.setTranslation(lockT, true)
@@ -840,11 +991,20 @@ export default function App() {
             dt,
             car.getWheelCompressions(),
           )
+          // Broadcast local state and update remote peer cars.
+          // t is null while the lobby is open (not started) — remotes must
+          // still animate, so update them even when there is nothing to send.
+          if (net && net.roomId) {
+            playerProgress = carProgress(body)
+            if (t) net.broadcastLocalState(car, t, playerProgress)
+            net.updateRemoteCars(dt, smoke)
+          }
           if (raceActive) {
             playerProgress = carProgress(body)
             if (!playerFinished && playerProgress >= raceDistance) {
               playerFinished = true
               playerFinishTime = raceElapsed
+              net?.notifyFinish(playerFinishTime)
             }
             // Mercy rule: 45 s after you finish, stragglers are scored by
             // position (DNF). Without this one lost AI blocks the results
@@ -895,6 +1055,14 @@ export default function App() {
               )
             }
             if (!raceFinished) {
+              const netOrders = Array.from(net?.remoteCars.values() ?? []).map(
+                (rc) => ({
+                  ai: -2,
+                  finished: rc.finished,
+                  time: rc.finishTime,
+                  progress: rc.progress,
+                }),
+              )
               const order = [
                 {
                   ai: -1,
@@ -902,6 +1070,7 @@ export default function App() {
                   time: playerFinishTime,
                   progress: playerProgress,
                 },
+                ...netOrders,
                 ...rivals.map((r, i) => ({
                   ai: i,
                   finished: r.finished,
@@ -956,16 +1125,28 @@ export default function App() {
             raceUiAcc += dt
             if (raceUiAcc > 0.05 || raceFinished || headsUp > 0 || countdown > 0) {
               raceUiAcc = 0
+              const netStandings: RaceStanding[] = Array.from(
+                net?.remoteCars.values() ?? [],
+              ).map((rc) => ({
+                id: rc.id,
+                name: rc.name,
+                color: colorHex(rc.color),
+                isPlayer: false,
+                progressM: rc.progress,
+                finished: rc.finished,
+                finishTime: rc.finishTime,
+              }))
               const standings: RaceStanding[] = [
                 {
                   id: "you",
-                  name: "You",
-                  color: "#e8e8e8",
+                  name: net?.roomId ? net.localName : "You",
+                  color: colorHex(net?.roomId ? net.localColor : 0xe8e8e8),
                   isPlayer: true,
                   progressM: playerProgress,
                   finished: playerFinished,
                   finishTime: playerFinishTime,
                 },
+                ...netStandings,
                 ...rivals.map((r, i) => ({
                   id: `ai-${i}`,
                   name: r.name,
@@ -1141,6 +1322,7 @@ export default function App() {
 
         ;(mount as any)._cleanup = () => {
           window.removeEventListener("resize", onResize)
+          window.removeEventListener("blur", onWinBlur)
           dom.removeEventListener("pointerdown", onPointerDown)
           dom.removeEventListener("pointermove", onPointerMove)
           dom.removeEventListener("pointerup", onPointerUp)
@@ -1155,14 +1337,38 @@ export default function App() {
           document.removeEventListener("pointerdown", onGesture)
           document.removeEventListener("keydown", onGesture)
           document.removeEventListener("pointerlockerror", onForceHide)
-          document.removeEventListener("pointerlockchange", onLockChange)
-          world.free()
+          if (net) {
+            try {
+              net.remoteCars.forEach((rc) => {
+                try {
+                  rc.dispose(scene, world)
+                } catch (e) {
+                  console.warn("[Teardown] Remote dispose failed:", e)
+                }
+              })
+            } finally {
+              net.remoteCars.clear()
+              // Detach BEFORE world.free(): packets arriving during the next
+              // setup's model loads must not create bodies in a dead world.
+              net.detachScene()
+            }
+          }
+          try {
+            world.free()
+          } catch (e) {
+            console.warn("[Teardown] world.free failed:", e)
+          }
         }
       } catch (e: any) {
         console.error(e)
         if (!disposed) {
           setError(e?.message ?? String(e))
           setLoading(false)
+          // The error overlay must be clickable: drop the hidden cursor and
+          // release pointer lock (the root div hides the cursor while driving).
+          document.documentElement.style.cursor = ""
+          document.body.style.cursor = ""
+          if (document.pointerLockElement) document.exitPointerLock?.()
         }
       }
     })()
@@ -1198,7 +1404,15 @@ export default function App() {
           Click anywhere to get the mouse back
         </div>
       )}
-      {!loading && !error && !started && (
+      {netConnected && started && !race.finished && (
+        <MultiplayerHudBadge
+          roomId={netRoomId}
+          playerCount={netPeers.length + 1}
+          pingMs={netPeers[0]?.pingMs ?? 0}
+          onLeave={handleLeaveRoom}
+        />
+      )}
+      {!loading && !error && !started && !showMultiplayerLobby && (
         <RaceMenu
           rivals={rivals}
           distanceKm={distanceKm}
@@ -1206,6 +1420,47 @@ export default function App() {
           onDistance={setDistanceKm}
           onFreeDrive={startGame}
           onStartRace={startRace}
+          onOpenMultiplayer={() => setShowMultiplayerLobby(true)}
+        />
+      )}
+      {showMultiplayerLobby && (
+        <MultiplayerLobby
+          playerName={driverName}
+          carColor={driverColor}
+          roomId={netRoomId}
+          isConnected={netConnected}
+          peers={netPeers}
+          onUpdateProfile={(name, col) => {
+            setDriverName(name)
+            setDriverColor(col)
+            try {
+              localStorage.setItem("oversteer_name", name)
+            } catch {}
+            if (multiplayerRef.current) {
+              multiplayerRef.current.localName = name
+              multiplayerRef.current.localColor = col
+              // Paint/name picked after joining must reach peers: the ghost
+              // otherwise keeps the color from the join-time HELLO forever.
+              multiplayerRef.current.announceIdentitySoon()
+            }
+          }}
+          onJoinRoom={(target, mode) => {
+            setJoinError(null)
+            setNetRoomId(target)
+            // join() reports false when the connection can't even start —
+            // don't strand the UI on the form with no explanation.
+            const ok =
+              multiplayerRef.current?.join(target, mode, driverName, driverColor) ?? false
+            setNetConnected(ok)
+          }}
+          onLeaveRoom={handleLeaveRoom}
+          onStartMultiplayerRace={handleStartMultiplayerRace}
+          onStartFreeDrive={handleStartFreeDrive}
+          joinError={joinError}
+          onBack={() => {
+            setJoinError(null)
+            setShowMultiplayerLobby(false)
+          }}
         />
       )}
       {!loading && !error && started && race.finished && (
@@ -1277,7 +1532,10 @@ export default function App() {
         </div>
       )}
       {error && (
-        <div className="absolute inset-0 flex items-center justify-center text-white p-6">
+        <div
+          className="absolute inset-0 flex items-center justify-center text-white p-6 cursor-auto [&_*]:cursor-auto"
+          style={{ cursor: "auto" }}
+        >
           <div className="max-w-lg rounded-2xl bg-red-950/80 border border-red-500/40 p-5">
             <div className="font-bold text-lg mb-2">Something went wrong</div>
             <div className="text-sm whitespace-pre-wrap">{error}</div>
@@ -1286,6 +1544,12 @@ export default function App() {
               <b>tree_pack.glb</b> are served (copied to the Vite public dir or
               imported as assets).
             </div>
+            <button
+              onClick={() => window.location.reload()}
+              className="mt-4 w-full rounded-2xl bg-[#e30613] px-6 py-2.5 text-sm font-semibold text-white transition hover:bg-[#f01422] active:scale-[0.98]"
+            >
+              Reload world
+            </button>
           </div>
         </div>
       )}
