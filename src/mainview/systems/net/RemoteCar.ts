@@ -9,6 +9,7 @@ import {
   CorrectionState,
   IMPACT_IMPULSE_THRESHOLD,
   RECOVER_CORR_MAX,
+  RECOVER_WARP_M,
   SUPPORT_DESCENT_DY,
   clampCorrectionDelta,
 } from "./correction"
@@ -386,7 +387,15 @@ export class RemoteCar {
     this.prevCorrMode = this.corr.mode
 
     try {
-      if (distSq > WARP_DIST_SQ) {
+      // Warp fallback: snap only on UNEXPLAINED divergence. While contact
+      // or recover mode is active the gap is collision displacement the
+      // crawl-home path (full cruise + 3 m/s capped correction, gated
+      // follow) is already closing — snapping there teleports the ghost
+      // out of an ordinary pit (measured 13 m snap, see RECOVER_WARP_M).
+      // Past RECOVER_WARP_M even contact cannot explain it (true
+      // teleport during a knock), so the fallback stays armed.
+      const explained = this.corr.mode !== "follow" && this.errMag < RECOVER_WARP_M
+      if (distSq > WARP_DIST_SQ && !explained) {
         // Teleport/respawn/join-across-map: snap, never fly through the scene.
         netDiagSnap(this.id, "warp-threshold", Math.sqrt(distSq))
         // History spans the discontinuity — drop it so the sampler can

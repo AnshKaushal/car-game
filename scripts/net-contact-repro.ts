@@ -573,5 +573,78 @@ function summarize(label: string, trace: StepRec[]) {
   world.free()
 }
 
+// ---------- T7. sustained pit vs moving owner: no warp on explained gap ----------
+// Driven 12 m/s side-push vs a 10 m/s owner (consistent packets: positions
+// advance at velocity × dt). Pre-fix the passive drag + grace coast crossed
+// the 15 m warp mid-recovery — a ~13 m teleport out of an ordinary
+// collision. While contact/recover is active the gap is collision
+// displacement: crawl home (cruise + capped correction), never snap.
+{
+  console.log("--- T7 pit-sustain, no warp ---")
+  const { world, scene } = makeWorld()
+  const striker = createChassisBody(world, 8, 0.72, -8)
+  for (let i = 0; i < 60; i++) world.step()
+  const car = new RemoteCar("r-t7", "t", 0xffffff, scene, "./", world, R)
+  const col = ghostCollider(car)
+  let now = 70_000_000
+  let seq = 0
+  car.nowOverride = now
+  let oz = 2
+  const feedOwner = () => feed(car, seq++, 0, 0.72, oz, 0, 0, -10, now)
+  for (let k = 0; k < 12; k++) {
+    now += 33
+    car.nowOverride = now
+    oz -= 0.33
+    feedOwner()
+  }
+  const snapsBefore = getNetDiagSnapshot().peers["r-t7"]?.snaps ?? 0
+  let contactSeen = false
+  let recoverSeen = false
+  let maxLat = 0
+  const trace: StepRec[] = []
+  for (let i = 0; i < 900; i++) {
+    now += 1000 / 120
+    car.nowOverride = now
+    if (i % 4 === 0) {
+      oz -= 10 * (1000 / 120) * 4 / 1000
+      feedOwner()
+    }
+    striker.setLinvel({ x: -12, y: 0, z: 0 }, true) // sustained driven push
+    car.drive(FIXED_DT)
+    const cmd = car.colliderBody!.linvel()
+    world.step()
+    if (i % 2 === 0) car.sampleContacts(now)
+    const p = car.colliderBody!.translation()
+    const v = car.colliderBody!.linvel()
+    const c = classify(world, col)
+    const dg = getNetDiagSnapshot().peers["r-t7"]
+    if (dg?.inContact) contactSeen = true
+    if (dg?.corrMode === "recover") recoverSeen = true
+    maxLat = Math.max(maxLat, Math.abs(p.x))
+    trace.push({
+      y: p.y, bottom: p.y - BOTTOM_OFF, cmdVy: cmd.y,
+      vy: v.y, speed: Math.hypot(v.x, v.z),
+      support: c.support, traffic: c.traffic,
+      mode: dg?.corrMode ?? "?",
+      impulse: c.impulse,
+    })
+  }
+  const s = summarize("T7", trace)
+  const snaps = (getNetDiagSnapshot().peers["r-t7"]?.snaps ?? 0) - snapsBefore
+  const errEnd = getNetDiagSnapshot().peers["r-t7"]?.posErrM ?? 99
+  const last = trace[trace.length - 1]
+  console.log(`T7: max lateral=${maxLat.toFixed(2)} m warps=${snaps} final err=${errEnd.toFixed(2)} m`)
+  check("T7 contact occurs (no tunneling)", contactSeen)
+  check("T7 recovery observed", recoverSeen)
+  check("T7 knock stands laterally (>1 m, no pin)", maxLat > 1, maxLat)
+  check("T7 no warp on explained divergence", snaps === 0, snaps)
+  check("T7 reconverges (final err < 1.5 m)", errEnd < 1.5, errEnd)
+  check("T7 final speed sane (<15 m/s)", last.speed < 15, last.speed)
+  check("T7 no deep ground penetration (bottom >= -0.06)", s.minB >= GROUND_TOP - PEN_TOL, s.minB)
+  check("T7 state stays finite", s.finite)
+  car.dispose(scene, world)
+  world.free()
+}
+
 console.log(`\n${passes} passed, ${failures} failed`)
 process.exit(failures ? 1 : 0)

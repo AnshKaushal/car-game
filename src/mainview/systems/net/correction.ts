@@ -46,6 +46,15 @@ export const RECOVER_RAMP_MS = 400
  * followed via full cruise while the gap closes gently; warp stays the
  * divergence backstop. */
 export const RECOVER_FOLLOW_ERR_M = 0.65
+/** Warp fallback stays armed while contact/recover explains the divergence
+ * only past this error (m). Measured 2026-10-14 (deterministic pit repro:
+ * driven 12 m/s side-push vs 10 m/s owner): passive drag + grace coast
+ * reached 11.3 m error at recover entry and crossed the 15 m warp
+ * mid-recovery — a 13 m teleport from an ordinary collision. Collision
+ * separation grows at most ~25 m/s (knock + cruise-apart) over the
+ * ~1 s contact+grace window, so 30 keeps 2× margin above measured
+ * ordinary pits while true teleports (100s of metres) still snap. */
+export const RECOVER_WARP_M = 30
 
 // --- Change B: gentle recovery + support descent (Phase 3b) ---
 /** Correction magnitude cap during recover mode (m/s). Follow keeps 10:
