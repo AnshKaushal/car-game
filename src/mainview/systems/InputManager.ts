@@ -1,3 +1,13 @@
+/** True when the key event comes from a text field — game keys must not fire. */
+function isTypingTarget(e: KeyboardEvent): boolean {
+  const t = e.target as HTMLElement | null
+  if (!t) return false
+  const tag = (t.tagName || "").toUpperCase()
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true
+  if (t.isContentEditable) return true
+  return false
+}
+
 export interface DriveInput {
   throttle: number
   brake: number
@@ -42,6 +52,8 @@ export class InputManager {
   }
 
   private onKeyDown(e: KeyboardEvent) {
+    // Never hijack keystrokes typed into form fields (lobby name/room inputs).
+    if (isTypingTarget(e)) return
     const c = this.normalize(e)
     if (
       c === "Space" ||
@@ -65,6 +77,7 @@ export class InputManager {
   }
 
   private onKeyUp(e: KeyboardEvent) {
+    if (isTypingTarget(e)) return
     this.keys.delete(this.normalize(e))
   }
 

@@ -2,12 +2,20 @@ import * as RAPIER from "@dimforge/rapier3d-compat"
 import { CAR_PHYSICS } from "../constants/physics"
 
 let R: typeof RAPIER | null = null
+// StrictMode/HMR can start two session setups at once — concurrent init()
+// calls race on the same WASM memory and corrupt the heap (surfacing later
+// as "Out of bounds memory access" inside raw set constructors). One flight.
+let initP: Promise<typeof RAPIER> | null = null
 
-export async function initPhysics(): Promise<typeof RAPIER> {
-  if (R) return R
-  await RAPIER.init()
-  R = RAPIER
-  return RAPIER
+export function initPhysics(): Promise<typeof RAPIER> {
+  if (R) return Promise.resolve(R)
+  if (!initP) {
+    initP = RAPIER.init().then(() => RAPIER)
+  }
+  return initP.then((mod) => {
+    R = mod
+    return mod
+  })
 }
 
 export function getR(): typeof RAPIER {
