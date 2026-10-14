@@ -421,18 +421,6 @@ export function MultiplayerLobby({
             </div>
           )}
 
-          <div className="mt-5 pt-3.5 border-t border-white/10">
-            <button
-              type="button"
-              onClick={() => {
-                fetch("http://localhost:9876/open-window", { method: "POST" }).catch(() => {})
-              }}
-              className="w-full rounded-xl border border-white/12 bg-white/5 py-2 text-xs font-semibold text-gray-300 hover:bg-white/10 hover:text-white transition flex items-center justify-center gap-2"
-            >
-              <span>🪟</span>
-              <span>Open 2nd Player Window (Cmd+Shift+N)</span>
-            </button>
-          </div>
         </div>
       </div>
     </div>

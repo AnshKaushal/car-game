@@ -179,22 +179,6 @@ export default function App() {
     setJoinError(null)
   }
 
-  useEffect(() => {
-    const handleGlobalKey = (e: KeyboardEvent) => {
-      if (
-        (e.metaKey || e.ctrlKey) &&
-        e.shiftKey &&
-        (e.key === "N" || e.key === "n")
-      ) {
-        fetch("http://localhost:9876/open-window", { method: "POST" }).catch(
-          () => {},
-        )
-      }
-    }
-    window.addEventListener("keydown", handleGlobalKey)
-    return () => window.removeEventListener("keydown", handleGlobalKey)
-  }, [])
-
   // Menus need a usable mouse: the moment the race is decided, drop
   // pointer lock and bring the cursor back so the results buttons work.
   useEffect(() => {

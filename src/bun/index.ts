@@ -92,25 +92,12 @@ try {
     port: LAN_PORT,
     fetch(req, server) {
       try {
-        const u = new URL(req.url)
         if (req.method === "OPTIONS") {
           return new Response(null, {
             headers: {
               "Access-Control-Allow-Origin": "*",
               "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
               "Access-Control-Allow-Headers": "Content-Type",
-            },
-          })
-        }
-        if (u.pathname === "/open-window") {
-          console.log(
-            "[LAN Server] Spawning test window via /open-window request",
-          )
-          createWindow(url, true)
-          return new Response("OK", {
-            headers: {
-              "Access-Control-Allow-Origin": "*",
-              "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
             },
           })
         }
@@ -193,16 +180,6 @@ ApplicationMenu.setApplicationMenu([
     ],
   },
   {
-    label: "File",
-    submenu: [
-      {
-        label: "New Window (Test Peer)",
-        action: "new-window",
-        accelerator: "CmdOrCtrl+Shift+N",
-      },
-    ],
-  },
-  {
     // Restores native clipboard shortcuts (Cmd+C/V/X, Ctrl+V, select all)
     // in lobby inputs. Without an Edit menu the webview has no
     // paste/cut/copy selectors and keyboard paste silently does nothing.
@@ -220,10 +197,6 @@ ApplicationMenu.setApplicationMenu([
     label: "Window",
     submenu: [
       {
-        label: "New Window (Test Peer)",
-        action: "new-window",
-      },
-      {
         label: "Toggle Fullscreen",
         action: "toggle-fullscreen",
       },
@@ -235,9 +208,7 @@ ApplicationMenu.on("application-menu-clicked", (event: any) => {
   const data = event?.data ?? event
   const action = data?.action
   console.log("[Menu Action Triggered]:", action)
-  if (action === "new-window") {
-    createWindow(url, true)
-  } else if (action === "toggle-fullscreen") {
+  if (action === "toggle-fullscreen") {
     try {
       mainWindow.setFullScreen(!mainWindow.isFullScreen())
     } catch {}
