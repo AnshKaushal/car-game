@@ -2,7 +2,6 @@ import { useEffect, useRef } from "react"
 import type { CarTelemetry } from "../systems/CarController"
 
 const RED_FROM_RPM = 6750
-const YELLOW_FROM_RPM = 5750
 const MAX_RPM = 8000
 const MAX_KMH = 340
 
@@ -27,6 +26,8 @@ function BmwDial({
   unit,
   maxLabel,
   redFrom,
+  redRpm,
+  yellowRpm,
   refs,
   id,
   modeLabel,
@@ -35,6 +36,8 @@ function BmwDial({
   unit: string
   maxLabel: number
   redFrom: number
+  redRpm: number
+  yellowRpm: number
   refs: GaugeRefs
   id: string
   modeLabel?: string
@@ -44,8 +47,16 @@ function BmwDial({
     CR = 78
   const ticks: React.ReactNode[] = []
   const isRpm = maxLabel <= 10
-  const steps = isRpm ? 40 : 68
-  const labelEvery = isRpm ? 5 : 8
+  // Tick counts are derived so labelled ticks always land on integers:
+  // rpm dials get one label per 1000 rpm (maxLabel must be whole), speed
+  // dials one per 20 km/h. (A 7000-rpm dial with the old fixed 40 steps
+  // labelled 3.5→"4" twice — hence this.)
+  const steps = isRpm
+    ? Math.round(maxLabel * 5)
+    : maxLabel % 20 === 0
+      ? (maxLabel / 20) * 4
+      : 68
+  const labelEvery = isRpm ? 5 : maxLabel % 20 === 0 ? 4 : 8
 
   for (let i = 0; i <= steps; i++) {
     const frac = i / steps
@@ -54,8 +65,8 @@ function BmwDial({
     const p1 = polar(CX, CY, CR, a)
     const p2 = polar(CX, CY, CR - (labelled ? 12 : 6), a)
     const rpm = frac * maxLabel * 1000
-    const red = isRpm && rpm >= RED_FROM_RPM
-    const yellow = isRpm && rpm >= YELLOW_FROM_RPM && !red
+    const red = isRpm && rpm >= redRpm
+    const yellow = isRpm && rpm >= yellowRpm && !red
     ticks.push(
       <line
         key={i}
@@ -238,6 +249,15 @@ function BmwDial({
 export default function Dashboard({ tele }: { tele: CarTelemetry }) {
   const teleRef = useRef(tele)
   teleRef.current = tele
+  // Per-car dial scaling rides on telemetry (updates at ~20 Hz, but the
+  // rAF loop below reads teleRef live, so a mid-session car swap — only
+  // possible from the menu — picks up the new scale immediately).
+  const dashMaxRpm = tele.dash?.maxRpm ?? MAX_RPM
+  const dashRedFrom = tele.dash?.redFromRpm ?? RED_FROM_RPM
+  const dashYellowFrom = dashRedFrom - 1000
+  const dashMaxKmh = tele.dash?.maxKmh ?? MAX_KMH
+  const dashRef = useRef({ maxRpm: dashMaxRpm, red: dashRedFrom, yellow: dashYellowFrom, kmh: dashMaxKmh })
+  dashRef.current = { maxRpm: dashMaxRpm, red: dashRedFrom, yellow: dashYellowFrom, kmh: dashMaxKmh }
   const spdNeedle = useRef<SVGGElement | null>(null)
   const spdNum = useRef<SVGTextElement | null>(null)
   const rpmNeedle = useRef<SVGGElement | null>(null)
@@ -249,25 +269,29 @@ export default function Dashboard({ tele }: { tele: CarTelemetry }) {
     let last = performance.now()
     let dRpm = 0,
       dKmh = 0
+    // BMW-style digital readout: the needle sweeps live, but the number
+    // steps at 2 Hz off the damped speed — no flickering last digit.
+    let lastNumT = 0
     const loop = (now: number) => {
       raf = requestAnimationFrame(loop)
       const dt = Math.min(0.05, (now - last) / 1000)
       last = now
       const t = teleRef.current
+      const dash = dashRef.current
       dRpm += (t.rpm - dRpm) * (1 - Math.exp(-dt * 14))
       dKmh += (Math.abs(t.speedKmh) - dKmh) * (1 - Math.exp(-dt * 10))
 
       if (rpmNeedle.current) {
         rpmNeedle.current.setAttribute(
           "transform",
-          `rotate(${angleFor(dRpm / MAX_RPM)} 100 100)`,
+          `rotate(${angleFor(dRpm / dash.maxRpm)} 100 100)`,
         )
       }
 
       if (spdNeedle.current) {
         spdNeedle.current.setAttribute(
           "transform",
-          `rotate(${angleFor(dKmh / MAX_KMH)} 100 100)`,
+          `rotate(${angleFor(dKmh / dash.kmh)} 100 100)`,
         )
       }
 
@@ -284,8 +308,8 @@ export default function Dashboard({ tele }: { tele: CarTelemetry }) {
       }
 
       if (rpmRim.current) {
-        const limiter = dRpm >= RED_FROM_RPM
-        const warning = dRpm >= YELLOW_FROM_RPM
+        const limiter = dRpm >= dash.red
+        const warning = dRpm >= dash.yellow
         const flash = limiter ? (Math.sin(now * 0.045) > 0 ? 1 : 0.10) : 1
 
         rpmRim.current.setAttribute(
@@ -307,7 +331,10 @@ export default function Dashboard({ tele }: { tele: CarTelemetry }) {
             : "none"
       }
 
-      if (spdNum.current) spdNum.current.textContent = String(Math.round(dKmh))
+      if (spdNum.current && now - lastNumT >= 500) {
+        lastNumT = now
+        spdNum.current.textContent = String(Math.round(dKmh))
+      }
     }
     raf = requestAnimationFrame(loop)
     return () => cancelAnimationFrame(raf)
@@ -349,8 +376,10 @@ export default function Dashboard({ tele }: { tele: CarTelemetry }) {
           <BmwDial
             title="SPEED"
             unit="KM/H"
-            maxLabel={MAX_KMH}
+            maxLabel={dashMaxKmh}
             redFrom={2}
+            redRpm={Infinity}
+            yellowRpm={Infinity}
             refs={{ needleRef: spdNeedle, numRef: spdNum }}
             id="bmw-spd"
           />
@@ -360,8 +389,10 @@ export default function Dashboard({ tele }: { tele: CarTelemetry }) {
           <BmwDial
             title="POWER"
             unit=""
-            maxLabel={8}
-            redFrom={RED_FROM_RPM / MAX_RPM}
+            maxLabel={dashMaxRpm / 1000}
+            redFrom={dashRedFrom / dashMaxRpm}
+            redRpm={dashRedFrom}
+            yellowRpm={dashYellowFrom}
             refs={{ needleRef: rpmNeedle, numRef: rpmNum, rimRef: rpmRim }}
             id="bmw-rpm"
             modeLabel={tele.autoMode ? "AUTO" : "MANUAL"}

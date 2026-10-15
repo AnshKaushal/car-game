@@ -2,58 +2,100 @@ import * as THREE from "three"
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js"
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js"
 import type * as RAPIER from "@dimforge/rapier3d-compat"
-import { tintCar } from "./carTint"
+import { CAR_PHYSICS } from "../constants/physics"
+import type { WheelDef } from "./Suspension"
+import { tintCar, whitenRims } from "./carTint"
 
 export const CAR_MODEL_YAW = Math.PI
 
 export const SUSP_VISUAL_REF = 0.074
 
-let sharedModel: THREE.Object3D | null = null
-let sharedLoad: Promise<THREE.Object3D | null> | null = null
+export interface CarVisualOptions {
+  /** GLB path under baseUrl. Defaults to the M3 (legacy behaviour). */
+  modelFile?: string
+  /** Real-world length the model auto-scales to. */
+  targetLength?: number
+  /** Wheel pivot lookup — explicit names win, else regex. */
+  pivots?: { pattern?: string; names?: string[] }
+  /** Fallback/imposter wheel positions (used when != 4 pivots found). */
+  wheelSpots?: readonly WheelDef[]
+  /** Wheel radius for fallback cylinders + imposter. */
+  wheelRadius?: number
+}
+
+/** Pivot candidates thinner than this fraction of the body length are
+ *  brake hardware, not wheels (R8 calipers are ~1.4%, tires ~7%).
+ *  Exported so the headless car-matrix script enforces the same rule. */
+export const MIN_PIVOT_FRAC = 0.025
+
+const DEFAULT_MODEL = "models/bmw_m3.glb"
+const DEFAULT_PIVOT_PATTERN = "^Plane00[3-6]$"
+
+const modelCache = new Map<
+  string,
+  THREE.Object3D | Promise<THREE.Object3D | null>
+>()
 
 // Scratch vector for the body-space origin drop in syncFromPose.
 const _poseOff = new THREE.Vector3()
 
-// Low-poly imposter kit: shared across every car, ~200 tris total.
+// Low-poly imposter kit: shared per wheel radius (~200 tris total).
 // Distant rivals render this (2 draw calls) instead of the full GLB.
 let loBodyGeo: THREE.BufferGeometry | null = null
 let loCabinGeo: THREE.BufferGeometry | null = null
-let loWheelGeo: THREE.BufferGeometry | null = null
+const loWheelGeos = new Map<number, THREE.BufferGeometry>()
 const loWheelMat = new THREE.MeshStandardMaterial({
   color: 0x141414,
   roughness: 0.9,
 })
 
-function loGeos(): {
+function loGeos(wheelRadius: number): {
   body: THREE.BufferGeometry
   cabin: THREE.BufferGeometry
   wheel: THREE.BufferGeometry
 } {
-  if (!loBodyGeo || !loCabinGeo || !loWheelGeo) {
+  if (!loBodyGeo || !loCabinGeo) {
     loBodyGeo = new THREE.BoxGeometry(1.8, 0.55, 4.7)
     loCabinGeo = new THREE.BoxGeometry(1.6, 0.5, 2.1)
-    const w = new THREE.CylinderGeometry(0.33, 0.33, 0.26, 8)
-    w.rotateZ(Math.PI / 2)
-    loWheelGeo = w
   }
-  return { body: loBodyGeo, cabin: loCabinGeo, wheel: loWheelGeo }
+  let wheel = loWheelGeos.get(wheelRadius)
+  if (!wheel) {
+    const w = new THREE.CylinderGeometry(wheelRadius, wheelRadius, 0.26, 8)
+    w.rotateZ(Math.PI / 2)
+    wheel = w
+    loWheelGeos.set(wheelRadius, wheel)
+  }
+  return { body: loBodyGeo, cabin: loCabinGeo, wheel }
 }
 
-async function loadSharedModel(baseUrl: string): Promise<THREE.Object3D | null> {
-  if (sharedModel) return sharedModel
-  if (!sharedLoad) {
-    sharedLoad = new GLTFLoader()
-      .loadAsync(`${baseUrl}models/bmw_m3.glb`)
-      .then((glb) => {
-        sharedModel = glb.scene
-        return sharedModel
-      })
-      .catch((e) => {
-        sharedLoad = null
-        throw e
-      })
-  }
-  return sharedLoad
+async function loadSharedModel(
+  baseUrl: string,
+  modelFile: string,
+): Promise<THREE.Object3D | null> {
+  const key = `${baseUrl}${modelFile}`
+  const hit = modelCache.get(key)
+  if (hit) return hit
+  const load = new GLTFLoader()
+    .loadAsync(key)
+    .then((glb) => {
+      const scene = glb.scene
+      modelCache.set(key, scene)
+      return scene as THREE.Object3D | null
+    })
+    .catch((e) => {
+      modelCache.delete(key)
+      throw e
+    })
+  modelCache.set(key, load)
+  return load
+}
+
+export function pivotMatches(
+  name: string,
+  pivots?: { pattern?: string; names?: string[] },
+): boolean {
+  if (pivots?.names) return pivots.names.includes(name)
+  return new RegExp(pivots?.pattern ?? DEFAULT_PIVOT_PATTERN, "i").test(name)
 }
 
 export class CarVisual {
@@ -78,13 +120,19 @@ export class CarVisual {
   /** Merged static meshes (body + per-wheel) shown in hi detail. */
   private hiMerged: THREE.Object3D[] = []
 
-  async load(baseUrl: string, tint?: number): Promise<void> {
-    const source = await loadSharedModel(baseUrl)
+  async load(
+    baseUrl: string,
+    tint?: number,
+    opts?: CarVisualOptions,
+  ): Promise<void> {
+    const modelFile = opts?.modelFile ?? DEFAULT_MODEL
+    const source = await loadSharedModel(baseUrl, modelFile)
     if (!source) throw new Error("Model not loaded")
     // A setTint() may have landed while the model was loading — newest wins.
     const effective = this.lastTint ?? tint
     const model = source.clone(true)
     this.tintedMats = effective !== undefined ? tintCar(model, effective) : []
+    whitenRims(model)
     model.traverse((o: any) => {
       if (o.isMesh) {
         o.castShadow = this.castShadow
@@ -94,7 +142,7 @@ export class CarVisual {
 
     const box = new THREE.Box3().setFromObject(model)
     const size = box.getSize(new THREE.Vector3())
-    const targetLen = 4.71
+    const targetLen = opts?.targetLength ?? CAR_PHYSICS.dimensions.length
     const longest = Math.max(size.x, size.y, size.z)
     const s = longest > 0 ? targetLen / longest : 1
     model.scale.multiplyScalar(s)
@@ -111,16 +159,35 @@ export class CarVisual {
     model.position.y -= boxA.min.y
     this.group.add(model)
     this.hiBody = model
-    this.buildImposter(this.lastTint ?? tint)
+    this.buildImposter(
+      this.lastTint ?? tint,
+      opts?.wheelSpots,
+      opts?.wheelRadius ?? CAR_PHYSICS.wheels.radius,
+    )
 
     this.group.updateMatrixWorld(true)
     const wheelGroups: THREE.Object3D[] = []
+    // Pivot = non-mesh node with children whose name matches the car's
+    // pivot spec. Thinner-than-a-tire matches (brake discs, calipers)
+    // are dropped by the min-size filter.
+    const pivotBox = new THREE.Box3()
+    const pivotSize = new THREE.Vector3()
+    const minPivot = longest * s * MIN_PIVOT_FRAC
     model.traverse((o: any) => {
       if (
         !o.isMesh &&
         o.children.length > 0 &&
-        /^Plane00[3-6]$/i.test(o.name)
+        pivotMatches(o.name, opts?.pivots)
       ) {
+        pivotBox.setFromObject(o)
+        pivotBox.getSize(pivotSize)
+        if (
+          pivotSize.x < minPivot ||
+          pivotSize.y < minPivot ||
+          pivotSize.z < minPivot
+        ) {
+          return
+        }
         wheelGroups.push(o)
       }
     })
@@ -149,20 +216,21 @@ export class CarVisual {
 
     if (this.wheels.length !== 4) {
       this.wheels = []
-      const geo = new THREE.CylinderGeometry(0.33, 0.33, 0.26, 18)
+      const wr = opts?.wheelRadius ?? CAR_PHYSICS.wheels.radius
+      const geo = new THREE.CylinderGeometry(wr, wr, 0.26, 18)
       geo.rotateZ(Math.PI / 2)
       const mat = new THREE.MeshStandardMaterial({
         color: 0x141414,
         roughness: 0.9,
       })
-      const rimG = new THREE.CylinderGeometry(0.19, 0.19, 0.27, 8)
+      const rimG = new THREE.CylinderGeometry(wr * 0.58, wr * 0.58, 0.27, 8)
       rimG.rotateZ(Math.PI / 2)
       const rimM = new THREE.MeshStandardMaterial({
-        color: 0x9aa0a6,
-        metalness: 0.8,
-        roughness: 0.3,
+        color: 0xffffff,
+        metalness: 0,
+        roughness: 0.4,
       })
-      const spots = [
+      const spots: readonly WheelDef[] = opts?.wheelSpots ?? [
         { x: -0.76, z: -1.51, front: true, left: true },
         { x: 0.76, z: -1.51, front: true, left: false },
         { x: -0.76, z: 1.31, front: false, left: true },
@@ -170,7 +238,7 @@ export class CarVisual {
       ]
       for (const sp of spots) {
         const pivot = new THREE.Group()
-        pivot.position.set(sp.x, 0.33, sp.z)
+        pivot.position.set(sp.x, wr, sp.z)
         pivot.rotation.order = "YXZ"
         const w = new THREE.Mesh(geo, mat)
         w.castShadow = this.castShadow
@@ -197,8 +265,13 @@ export class CarVisual {
   }
 
   /** Cheap stand-in body (~200 tris, 2 draw calls) for distant cars. */
-  private buildImposter(tint?: number) {
-    const g = loGeos()
+  private buildImposter(
+    tint?: number,
+    wheelSpots?: readonly WheelDef[],
+    wheelRadius?: number,
+  ) {
+    const wr = wheelRadius ?? CAR_PHYSICS.wheels.radius
+    const g = loGeos(wr)
     const lo = new THREE.Group()
     const paint = new THREE.MeshStandardMaterial({
       color: tint ?? 0x8a8f96,
@@ -216,15 +289,15 @@ export class CarVisual {
     const cabinM = new THREE.Mesh(g.cabin, glass)
     cabinM.position.set(0, 1.05, 0.25)
     lo.add(bodyM, cabinM)
-    const spots = [
-      [-0.76, -1.51],
-      [0.76, -1.51],
-      [-0.76, 1.31],
-      [0.76, 1.31],
-    ] as const
-    for (const [x, z] of spots) {
+    const spots = (wheelSpots ?? [
+      { x: -0.76, z: -1.51 },
+      { x: 0.76, z: -1.51 },
+      { x: -0.76, z: 1.31 },
+      { x: 0.76, z: 1.31 },
+    ]) as readonly { x: number; z: number }[]
+    for (const { x, z } of spots) {
       const w = new THREE.Mesh(g.wheel, loWheelMat)
-      w.position.set(x, 0.33, z)
+      w.position.set(x, wr, z)
       lo.add(w)
     }
     lo.visible = false
@@ -357,6 +430,14 @@ export class CarVisual {
     const c = new THREE.Color(color)
     for (const m of this.tintedMats) m.color.copy(c)
     this.loPaint?.color.copy(c)
+  }
+
+  /**
+   * True when a tint pass ran at load (stock-paint cars have no tinted
+   * clones, so setTint would silently do nothing — callers reload instead).
+   */
+  hasTint(): boolean {
+    return this.tintedMats.length > 0
   }
 
   wheelContactPositions(    includeFront: boolean,
