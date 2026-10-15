@@ -1,6 +1,7 @@
 import * as THREE from "three"
 import type * as RAPIER from "@dimforge/rapier3d-compat"
 import { CarVisual } from "../CarVisual"
+import { createCabinCollider } from "../PhysicsSystem"
 import { CAR_PHYSICS } from "../../constants/physics"
 import type { TireSmoke } from "../TireSmoke"
 import type { ValidatedState } from "./stateProtocol"
@@ -28,6 +29,16 @@ import {
   netDiagSnap,
 } from "./NetDiagnostics"
 
+export interface RemoteCarOptions {
+  /** GLB path under baseUrl. Defaults to the M3 (legacy peers). */
+  modelFile?: string
+  /** Chassis collider size — matches the peer's car so shoves land right. */
+  dims?: { width: number; height: number; length: number }
+  /** Chassis mass of the peer's car. */
+  mass?: number
+}
+
+const REMOTE_DEFAULT_MODEL = "models/bmw_m3.glb"
 const TIRE_RADIUS = 0.33
 // How far ahead of the last packet the drive goal may extrapolate. Tight on
 // purpose: overshooting through a turn the peer already took would ram us
@@ -112,6 +123,9 @@ export class RemoteCar {
   private errMag = 0
 
   private smokePosBuf: THREE.Vector3[] = []
+  private scene: THREE.Scene | null = null
+  private baseUrl = ""
+  private modelFile: string
 
   constructor(
     id: string,
@@ -121,21 +135,20 @@ export class RemoteCar {
     baseUrl: string,
     world?: RAPIER.World,
     rapier?: typeof RAPIER,
+    opts?: RemoteCarOptions,
   ) {
     this.id = id
     this.name = name
     this.color = color
+    this.scene = scene
+    this.baseUrl = baseUrl
+    this.modelFile = opts?.modelFile ?? REMOTE_DEFAULT_MODEL
 
     this.visual = new CarVisual()
     this.visual.castShadow = true
 
-    // Load car model and add to scene
-    this.visual.load(baseUrl, color).then(() => {
-      scene.add(this.visual.group)
-    }).catch((e) => {
-      console.warn(`[RemoteCar] Failed to load visual model for ${name}:`, e)
-      scene.add(this.visual.group)
-    })
+    // Load car model and add to scene (reloadable via setModel).
+    this.loadVisual()
 
     // Shared-physics ghost: a DYNAMIC body with the same mass as the local
     // chassis, velocity-driven toward the owner's authoritative pose every
@@ -147,22 +160,24 @@ export class RemoteCar {
     if (world && rapier) {
       try {
         const P = CAR_PHYSICS
+        const dims = opts?.dims ?? P.dimensions
+        const mass = opts?.mass ?? P.mass.chassis
         const bodyDesc = rapier.RigidBodyDesc.dynamic()
           .setTranslation(0, 0.72, 0)
           .setLinvel(0, 0, 0)
           .setAngvel({ x: 0, y: 0, z: 0 })
-          .setLinearDamping(0.005)
+          .setLinearDamping(0.001)
           .setAngularDamping(0.55)
           .setGravityScale(0)
           .setCanSleep(false)
           .setCcdEnabled(true)
         this.colliderBody = world.createRigidBody(bodyDesc)
         const colDesc = rapier.ColliderDesc.cuboid(
-          P.dimensions.width / 2,
-          0.32,
-          P.dimensions.length / 2,
+          dims.width / 2,
+          0.32 * (dims.height / 1.43),
+          dims.length / 2,
         ).setTranslation(0, -0.1, 0)
-          .setMass(P.mass.chassis)
+          .setMass(mass)
           // Paint slides on paint: low car-vs-car friction (Min wins over the
           // chassis' default Average rule) so side-swipes deflect and slide
           // apart instead of interlocking and dragging to 300. Modest bounce:
@@ -172,11 +187,57 @@ export class RemoteCar {
           .setRestitution(0.2)
         // Kept for Phase 4 contact queries (narrow-phase only, read-only).
         this.collider = world.createCollider(colDesc, this.colliderBody)
+        // Cabin volume, matching the local chassis (see PhysicsSystem):
+        // without it a flipped ghost settles on the slab and its roof
+        // renders underground. Same low car-vs-car friction as the slab.
+        world.createCollider(
+          createCabinCollider(rapier, dims)
+            .setFriction(0.15)
+            .setFrictionCombineRule(rapier.CoefficientCombineRule.Min)
+            .setRestitution(0.2),
+          this.colliderBody,
+        )
       } catch (e) {
         console.warn(`[RemoteCar] Failed to create body for ${name}:`, e)
         this.colliderBody = null
       }
     }
+  }
+
+  /**
+   * (Re)load the ghost's visual model. Async by nature (GLB fetch) —
+   * the group is added on completion, same as construction.
+   */
+  private loadVisual() {
+    const scene = this.scene
+    const visual = this.visual
+    visual
+      .load(this.baseUrl, this.color, { modelFile: this.modelFile })
+      .then(() => {
+        scene?.add(visual.group)
+      })
+      .catch((e) => {
+        console.warn(`[RemoteCar] Failed to load visual model for ${this.name}:`, e)
+        scene?.add(visual.group)
+      })
+  }
+
+  /**
+   * Swap the ghost to another car model (peer's HELLO named a carId).
+   * No-op when the model is already current. The physics ghost body is
+   * intentionally NOT rebuilt — collider size differences between road
+   * cars are small, and rebuilding mid-session risks contact pops.
+   */
+  setModel(modelFile: string | undefined | null) {
+    const next = modelFile || REMOTE_DEFAULT_MODEL
+    if (next === this.modelFile) return
+    this.modelFile = next
+    try {
+      this.scene?.remove(this.visual.group)
+    } catch {}
+    this.visual = new CarVisual()
+    this.visual.castShadow = true
+    this.loadVisual()
   }
 
   /**

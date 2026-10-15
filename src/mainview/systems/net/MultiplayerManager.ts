@@ -4,7 +4,12 @@ import { joinRoom, selfId } from "@trystero-p2p/torrent"
 import type { CarController } from "../CarController"
 import type { CarTelemetry } from "../CarController"
 import type { TireSmoke } from "../TireSmoke"
-import { colorHex, rivalColor } from "../carTint"
+import { DEFAULT_PLAYER_COLOR, colorHex } from "../carTint"
+import {
+  DEFAULT_CAR_ID,
+  getCar,
+  modelFileForCarId,
+} from "../../constants/cars"
 import { RemoteCar } from "./RemoteCar"
 import {
   maybeLogNetDiag,
@@ -50,6 +55,8 @@ export class MultiplayerManager {
   public localName: string
   public localColor: number
   public localColorHex: string
+  /** Car registry id broadcast to peers (selectable in the menu). */
+  public localCarId: string = DEFAULT_CAR_ID
   public roomId: string | null = null
   public mode: MultiplayerMode = "p2p"
 
@@ -78,12 +85,38 @@ export class MultiplayerManager {
   constructor(name?: string, color?: number) {
     this.localId = selfId
     this.localName = name || `Racer-${selfId.slice(0, 4)}`
-    this.localColor = color ?? rivalColor(Math.floor(Math.random() * 10))
+    this.localColor = color ?? DEFAULT_PLAYER_COLOR
     this.localColorHex = colorHex(this.localColor)
   }
 
   setCallbacks(cbs: MultiplayerCallbacks) {
     this.callbacks = cbs
+  }
+
+  /** Player picked a different car — rebroadcast so peers swap the ghost. */
+  public setLocalCarId(carId: string) {
+    if (carId === this.localCarId) return
+    this.localCarId = carId
+    this.announceIdentitySoon()
+  }
+
+  /** Shared HELLO body — carId lets peers resolve the ghost model. */
+  private helloPayload() {
+    return {
+      name: this.localName,
+      color: this.localColor,
+      session: this.localSession,
+      carId: this.localCarId,
+    }
+  }
+  /** Visual + collider config for a peer's ghost from its carId. */
+  private remoteOptsFor(peer: PeerPlayer | undefined) {
+    const def = getCar(peer?.carId)
+    return {
+      modelFile: def.modelFile,
+      dims: def.physics.dimensions,
+      mass: def.physics.mass.chassis,
+    }
   }
 
   attachScene(
@@ -108,6 +141,7 @@ export class MultiplayerManager {
           this.baseUrl,
           this.activeWorld ?? undefined,
           this.activeRapier ?? undefined,
+          this.remoteOptsFor(peer),
         )
         this.remoteCars.set(id, remote)
       }
@@ -241,11 +275,7 @@ export class MultiplayerManager {
         type: "HELLO",
         senderId: this.localId,
         t: Date.now(),
-        payload: {
-          name: this.localName,
-          color: this.localColor,
-          session: this.localSession,
-        },
+        payload: this.helloPayload(),
       })
     }
 
@@ -259,11 +289,7 @@ export class MultiplayerManager {
       type: "HELLO",
       senderId: this.localId,
       t: Date.now(),
-      payload: {
-        name: this.localName,
-        color: this.localColor,
-        session: this.localSession,
-      },
+      payload: this.helloPayload(),
     })
 
     // Show "connected / waiting for peers" immediately — onPeerJoin only
@@ -318,11 +344,7 @@ export class MultiplayerManager {
         type: "HELLO",
         senderId: this.localId,
         t: Date.now(),
-        payload: {
-          name: this.localName,
-          color: this.localColor,
-          session: this.localSession,
-        },
+        payload: this.helloPayload(),
       })
       this.notifyPeersChanged()
     }
@@ -340,11 +362,7 @@ export class MultiplayerManager {
             type: "HELLO",
             senderId: this.localId,
             t: Date.now(),
-            payload: {
-              name: this.localName,
-              color: this.localColor,
-              session: this.localSession,
-            },
+            payload: this.helloPayload(),
           })
         }
 
@@ -411,6 +429,7 @@ export class MultiplayerManager {
           this.baseUrl,
           this.activeWorld ?? undefined,
           this.activeRapier ?? undefined,
+          this.remoteOptsFor(peer),
         )
         this.remoteCars.set(peerId, remote)
       }
@@ -501,6 +520,7 @@ export class MultiplayerManager {
         this.baseUrl,
         this.activeWorld ?? undefined,
         this.activeRapier ?? undefined,
+        this.remoteOptsFor(peer),
       )
       this.remoteCars.set(senderId, car)
       netDiagRemoteCount(this.remoteCars.size)
@@ -527,15 +547,19 @@ export class MultiplayerManager {
         peer.name = evt.payload?.name || peer.name
         peer.color = evt.payload?.color ?? peer.color
         peer.colorHex = colorHex(peer.color)
+        if (typeof evt.payload?.carId === "string") {
+          peer.carId = evt.payload.carId
+        }
         // Retint the live 3D model, not just the roster dot: paint picked
         // after joining (or a HELLO arriving after the visual loaded)
-        // must show up on the ghost immediately.
+        // must show up on the ghost immediately. Same for the car model.
         const car = this.remoteCars.get(senderId)
         if (car) {
           car.name = peer.name
           if (evt.payload?.color !== undefined) {
             car.setColor(evt.payload.color)
           }
+          car.setModel(modelFileForCarId(peer.carId))
         }
         this.notifyPeersChanged()
         break
@@ -594,18 +618,14 @@ export class MultiplayerManager {
     }
   }
 
-  /** Re-broadcast name + paint (lobby picks after joining must propagate). */
+  /** Re-broadcast name + paint + car (lobby picks after joining must propagate). */
   public announceIdentity() {
     if (!this.roomId) return
     this.sendEvent({
       type: "HELLO",
       senderId: this.localId,
       t: Date.now(),
-      payload: {
-        name: this.localName,
-        color: this.localColor,
-        session: this.localSession,
-      },
+      payload: this.helloPayload(),
     })
   }
 

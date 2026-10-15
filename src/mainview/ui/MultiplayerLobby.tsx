@@ -334,7 +334,7 @@ export function MultiplayerLobby({
                   {netMode === "p2p" ? "WebRTC UDP" : "LAN WS"}
                 </span>
               </div>
-              <div className="max-h-32 overflow-y-auto space-y-1.5 pr-1">
+              <div className="max-h-32 overflow-y-auto space-y-1.5 pr-1 no-scrollbar">
                 {peers.length === 0 && (
                   <div className="rounded-xl border border-amber-400/25 bg-amber-400/10 px-3 py-2 text-[12px] text-amber-200">
                     Waiting for rivals — share{" "}

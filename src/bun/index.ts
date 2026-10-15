@@ -1,10 +1,13 @@
-import { ApplicationMenu, BrowserWindow, Updater } from "electrobun/main"
+import { ApplicationMenu, BrowserWindow, GlobalShortcut, Updater } from "electrobun/main"
+import os from "os"
 
 const DEV_SERVER_PORT = 5173
 const DEV_SERVER_URL = `http://localhost:${DEV_SERVER_PORT}`
+const LAN_PORT = 9876
 
 async function withTimeout<T>(work: Promise<T>, ms: number): Promise<T | null> {
   let timer: ReturnType<typeof setTimeout> | undefined
+
   try {
     return await Promise.race([
       work,
@@ -21,25 +24,35 @@ async function withTimeout<T>(work: Promise<T>, ms: number): Promise<T | null> {
 
 async function autoUpdate(): Promise<void> {
   let channel = ""
+
   try {
     channel = await Updater.localInfo.channel()
   } catch {
     return
   }
+
   if (channel === "dev") return
+
   try {
     Updater.onStatusChange((entry) => {
       console.log(`[update] ${entry.status}: ${entry.message}`)
     })
+
     const info = await withTimeout(Updater.checkForUpdate(), 8000)
+
     if (!info || info.error || !info.updateAvailable) return
+
     console.log(`[update] version ${info.version} available, downloading`)
+
     const downloaded = await withTimeout(
       Updater.downloadUpdate(),
       10 * 60 * 1000,
     )
+
     if (downloaded === null) return
+
     const fresh = await Updater.checkForUpdate()
+
     if (fresh.updateReady && !fresh.error) {
       console.log("[update] applying, relaunching on the new version")
       await Updater.applyUpdate()
@@ -51,6 +64,7 @@ await autoUpdate()
 
 async function getMainViewUrl(): Promise<string> {
   const channel = await Updater.localInfo.channel()
+
   if (channel === "dev") {
     try {
       await fetch(DEV_SERVER_URL, { method: "HEAD" })
@@ -62,16 +76,14 @@ async function getMainViewUrl(): Promise<string> {
       )
     }
   }
+
   return "views://mainview/index.html"
 }
-
-const url = await getMainViewUrl()
-
-import os from "os"
 
 function getLocalIp(): string {
   try {
     const nets = os.networkInterfaces()
+
     for (const name of Object.keys(nets)) {
       for (const net of nets[name] || []) {
         if (net.family === "IPv4" && !net.internal) {
@@ -80,52 +92,59 @@ function getLocalIp(): string {
       }
     }
   } catch {}
+
   return "127.0.0.1"
 }
 
-// Built-in zero-config LAN WebSocket relay server on port 9876
-const LAN_PORT = 9876
+// LAN WebSocket relay
 const lanClients = new Set<any>()
 
 try {
   Bun.serve({
     port: LAN_PORT,
+
     fetch(req, server) {
-      try {
-        if (req.method === "OPTIONS") {
-          return new Response(null, {
-            headers: {
-              "Access-Control-Allow-Origin": "*",
-              "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-              "Access-Control-Allow-Headers": "Content-Type",
-            },
-          })
-        }
-      } catch {}
+      if (req.method === "OPTIONS") {
+        return new Response(null, {
+          headers: {
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type",
+          },
+        })
+      }
+
       if (server.upgrade(req)) return undefined
+
       return new Response(
         `OverSteer LAN Relay Server (${getLocalIp()}:${LAN_PORT})`,
         { status: 200 },
       )
     },
+
     websocket: {
       open(ws) {
         lanClients.add(ws)
       },
+
       message(ws, msg) {
-        const text = typeof msg === "string" ? msg : msg.toString()
-        for (const c of lanClients) {
-          if (c === ws) continue
+        const message = typeof msg === "string" ? msg : msg.toString()
+
+        for (const client of lanClients) {
+          if (client === ws) continue
+
           try {
-            c.send(text)
+            client.send(message)
           } catch {}
         }
       },
+
       close(ws) {
         lanClients.delete(ws)
       },
     },
   })
+
   console.log(`[LAN Relay] Server running on ws://${getLocalIp()}:${LAN_PORT}`)
 } catch {
   console.log(
@@ -142,31 +161,36 @@ const openWindows: BrowserWindow[] = []
 
 function createWindow(winUrl: string, windowed = isWindowed) {
   console.log(`[Window] Creating window (windowed=${windowed}) -> ${winUrl}`)
+
   const win = new BrowserWindow({
     title: "OverSteer",
     url: winUrl,
     frame: {
-      width: windowed ? 1024 : 900,
-      height: windowed ? 680 : 700,
+      width: windowed ? 1024 : 1440,
+      height: windowed ? 680 : 900,
     },
     styleMask: {
       Miniaturizable: true,
       Resizable: true,
-      FullSizeContentView: !windowed,
+      FullSizeContentView: false,
     },
   })
 
   openWindows.push(win)
 
   if (!windowed) {
-    try {
-      win.setFullScreen(true)
-    } catch {}
+    win.setFullScreen(true)
   }
 
   return win
 }
 
+// Configure the native application menu before creating the window.
+// Windows runs chromeless (no menu bar): an explicit empty menu guarantees
+// no default menu appears. Other platforms keep the full menu.
+if (process.platform === "win32") {
+  ApplicationMenu.setApplicationMenu([])
+} else {
 ApplicationMenu.setApplicationMenu([
   {
     label: "OverSteer",
@@ -180,9 +204,6 @@ ApplicationMenu.setApplicationMenu([
     ],
   },
   {
-    // Restores native clipboard shortcuts (Cmd+C/V/X, Ctrl+V, select all)
-    // in lobby inputs. Without an Edit menu the webview has no
-    // paste/cut/copy selectors and keyboard paste silently does nothing.
     label: "Edit",
     submenu: [
       { role: "undo" },
@@ -203,86 +224,44 @@ ApplicationMenu.setApplicationMenu([
     ],
   },
 ])
+}
+
+const url = await getMainViewUrl()
+const mainWindow = createWindow(url, isWindowed)
+
+// Fullscreen intent lives here so the menu toggle is the single source of
+// truth. Note: no watchdog re-assertion — yanking the window back into a
+// Space produces exactly the exit/enter flicker reported, and nothing in
+// this stack exits native fullscreen on Escape (the flicker was
+// pointer-lock churn, fixed page-side). The only way out is the explicit
+// Cmd/Ctrl+F toggle below.
+let wantFullscreen = !isWindowed
 
 ApplicationMenu.on("application-menu-clicked", (event: any) => {
   const data = event?.data ?? event
-  const action = data?.action
-  console.log("[Menu Action Triggered]:", action)
-  if (action === "toggle-fullscreen") {
-    try {
-      mainWindow.setFullScreen(!mainWindow.isFullScreen())
-    } catch {}
-  }
+
+  if (data?.action !== "toggle-fullscreen") return
+
+  wantFullscreen = !wantFullscreen
+  mainWindow.setFullScreen(wantFullscreen)
 })
 
-const mainWindow = createWindow(url, isWindowed)
-
-const MACOS_ESCAPE_KEYCODE = 53
-
-let lastEscapeAt = 0
-
-mainWindow.on("keyDown", (event: any) => {
-  const data = event?.data ?? event
-  if (data?.keyCode !== MACOS_ESCAPE_KEYCODE) return
-  if (data?.isRepeat) return
-
-  const now = Date.now()
-  const isDouble = now - lastEscapeAt < 500
-  lastEscapeAt = now
-
-  if (isDouble) {
-    try {
-      if (mainWindow.isFullScreen()) mainWindow.setFullScreen(false)
-    } catch {}
-    try {
-      mainWindow.minimize()
-    } catch {}
-    return
-  }
-
+// Windows has no menu bar, so the Ctrl+F accelerator above doesn't exist
+// there — without this there would be no way out of fullscreen. F11 is the
+// Windows convention. Exit-only (never re-enters): a toggle could steal
+// focus when F11 is pressed in another app while the game idles behind it.
+// Scoped to Windows — global hotkeys need accessibility permission on macOS.
+if (process.platform === "win32") {
   try {
-    mainWindow.webview.executeJavascript(
-      `document.dispatchEvent(new KeyboardEvent('keydown', { code: 'Escape', key: 'Escape', bubbles: true }));
-       document.dispatchEvent(new KeyboardEvent('keyup',   { code: 'Escape', key: 'Escape', bubbles: true }));`,
-    )
+    GlobalShortcut.register("F11", () => {
+      try {
+        if (mainWindow.isFullScreen()) {
+          wantFullscreen = false
+          mainWindow.setFullScreen(false)
+        }
+      } catch {}
+    })
   } catch {}
-
-  if (!isWindowed) {
-    try {
-      if (!mainWindow.isFullScreen()) {
-        if (mainWindow.isMinimized()) mainWindow.unminimize()
-        mainWindow.setFullScreen(true)
-      }
-    } catch {}
-  }
-})
-
-if (!isWindowed) {
-  let lastRefullscreen = 0
-  let fullscreenLostAt = 0
-  setInterval(() => {
-    let full = true
-    try {
-      full = mainWindow.isFullScreen()
-    } catch {
-      return
-    }
-    const now = Date.now()
-    if (full) {
-      fullscreenLostAt = 0
-      return
-    }
-    if (!fullscreenLostAt) fullscreenLostAt = now
-    try {
-      if (mainWindow.isMinimized()) mainWindow.unminimize()
-    } catch {}
-    if (now - fullscreenLostAt < 600) return
-    if (now - lastRefullscreen < 800) return
-    lastRefullscreen = now
-    try {
-      mainWindow.setFullScreen(true)
-    } catch {}
-  }, 200)
 }
 
 console.log(

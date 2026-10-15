@@ -45,6 +45,7 @@ export const CAR_PHYSICS = {
   transmission: {
     gearRatios: [4.71, 3.14, 2.1, 1.67, 1.29, 1.0, 0.84, 0.67],
     finalDriveRatio: 3.15,
+    reverseRatio: 3.2,
     shiftTimeAuto: 0.15,
     shiftTimeManual: 0.08,
     clutchEngagementRPM: 1500,
@@ -66,6 +67,18 @@ export const CAR_PHYSICS = {
     lsdAccelLock: 0.4,
     lsdDecelLock: 0.3,
     preloadTorque: 50,
+  },
+
+  // Which axles receive drive torque. RWD-only historically (front wheels
+  // got exactly 0); AWD cars split the total shaft torque front/rear.
+  // torqueCapGear1/2 are per-WHEEL caps for 1st/2nd gear (the gears with
+  // more twist than the tires can hold) — each driven wheel is capped
+  // individually, so AWD cars naturally put down ~2x the capped total.
+  drivetrain: {
+    type: "rwd",
+    frontTorqueSplit: 0,
+    torqueCapGear1: 2400,
+    torqueCapGear2: 3800,
   },
 
   wheels: {
@@ -140,7 +153,7 @@ export const CAR_PHYSICS = {
     stabilityControl: 0.2,
     countersteerAssist: 4500,
     speedFeel: {
-      fovBase: 60,
+      fovBase: 68,
       fovMax: 104,
       fovAtMaxSpeedKmh: 330,
       linesStrength: 0.85,
@@ -161,14 +174,43 @@ export const CAR_PHYSICS = {
   },
 } as const
 
-export type CarPhysicsConfig = typeof CAR_PHYSICS
+/** Deep-widen the `as const` tune into plain mutable arrays/objects/
+ *  numbers so per-car overrides accept any value of the right shape.
+ *  CAR_PHYSICS itself stays frozen and assignable to this type. */
+export type Widen<T> = T extends (...args: never[]) => unknown
+  ? T
+  : T extends readonly (infer U)[]
+    ? Array<Widen<U>>
+    : T extends object
+      ? { -readonly [K in keyof T]: Widen<T[K]> }
+      : T extends number
+        ? number
+        : T extends string
+          ? string
+          : T extends boolean
+            ? boolean
+            : T
 
-export const DEFAULT_PHYSICS_CONFIG = CAR_PHYSICS
+export type CarPhysicsConfig = Widen<typeof CAR_PHYSICS>
+
+export const DEFAULT_PHYSICS_CONFIG: CarPhysicsConfig =
+  deepMutable(CAR_PHYSICS)
+
+/** Deep-copy readonly `as const` data into plain mutable structures. */
+export function deepMutable<T>(v: T): Widen<T> {
+  if (Array.isArray(v)) return v.map(deepMutable) as Widen<T>
+  if (v && typeof v === "object") {
+    const o: Record<string, unknown> = {}
+    for (const [k, val] of Object.entries(v)) o[k] = deepMutable(val)
+    return o as Widen<T>
+  }
+  return v as Widen<T>
+}
 
 export function createPhysicsConfig(
   overrides: Partial<CarPhysicsConfig>,
 ): CarPhysicsConfig {
-  return {
+  return deepMutable({
     ...CAR_PHYSICS,
     ...overrides,
     dimensions: { ...CAR_PHYSICS.dimensions, ...overrides.dimensions },
@@ -176,9 +218,10 @@ export function createPhysicsConfig(
     engine: { ...CAR_PHYSICS.engine, ...overrides.engine },
     transmission: { ...CAR_PHYSICS.transmission, ...overrides.transmission },
     differential: { ...CAR_PHYSICS.differential, ...overrides.differential },
+    drivetrain: { ...CAR_PHYSICS.drivetrain, ...overrides.drivetrain },
     wheels: { ...CAR_PHYSICS.wheels, ...overrides.wheels },
     aero: { ...CAR_PHYSICS.aero, ...overrides.aero },
     assists: { ...CAR_PHYSICS.assists, ...overrides.assists },
     simulation: { ...CAR_PHYSICS.simulation, ...overrides.simulation },
-  }
+  })
 }

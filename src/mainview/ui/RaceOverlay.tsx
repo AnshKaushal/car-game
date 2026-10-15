@@ -5,7 +5,9 @@ import {
   type RaceSnapshot,
   type RaceStanding,
 } from "../systems/RaceTypes"
+import type { CarDefinition } from "../constants/cars"
 import { roadGapM } from "../systems/WorldManager"
+import { ChevronLeft, ChevronRight } from "lucide-react"
 
 function formatTime(seconds: number | null) {
   if (seconds == null) return "—"
@@ -29,11 +31,31 @@ const stripe = (
   </div>
 )
 
+const PAINTS: { name: string; value: number | null }[] = [
+  { name: "Stock", value: null },
+  { name: "Black", value: 0x000000 },
+  { name: "White", value: 0xf5f5f5 },
+  { name: "Silver", value: 0x9aa0a6 },
+  { name: "Red", value: 0xe30613 },
+  { name: "Blue", value: 0x1f6feb },
+  { name: "Orange", value: 0xf97316 },
+  { name: "Green", value: 0x1f8a4c },
+  { name: "Yellow", value: 0xf5c518 },
+]
+
 export function RaceMenu({
   rivals,
   distanceKm,
   onRivals,
   onDistance,
+  cars,
+  carId,
+  onPrevCar,
+  onNextCar,
+  paint,
+  onPaint,
+  pool,
+  onTogglePool,
   onFreeDrive,
   onStartRace,
   onOpenMultiplayer,
@@ -42,26 +64,120 @@ export function RaceMenu({
   distanceKm: number
   onRivals: (n: (typeof RACE_COUNTS)[number]) => void
   onDistance: (km: (typeof RACE_DISTANCES_KM)[number]) => void
+  cars: CarDefinition[]
+  carId: string
+  onPrevCar: () => void
+  onNextCar: () => void
+  /** Effective paint (explicit pick, else the car's default). */
+  paint: number | null
+  /** null = stock GLB paint (full reload); color = live recolor. */
+  onPaint: (color: number | null) => void
+  pool: string[]
+  onTogglePool: (id: string) => void
   onFreeDrive: () => void
   onStartRace: () => void
   onOpenMultiplayer?: () => void
 }) {
+  const idx = Math.max(
+    0,
+    cars.findIndex((c) => c.id === carId),
+  )
+  const selected = cars[idx] ?? cars[0]
+  const specRows: [string, string][] = selected
+    ? [
+        ["POWER", `${selected.physics.engine.maxPowerHP} HP`],
+        ["TORQUE", `${selected.physics.engine.maxTorqueNm} Nm`],
+        ["0–100 KM/H", `${selected.tested.zeroToHundredS.toFixed(1)} s`],
+        ["TOP SPEED", `${selected.tested.topSpeedKmh} km/h`],
+        ["DRIVE", selected.physics.drivetrain.type.toUpperCase()],
+        ["WEIGHT", `${selected.physics.mass.chassis} kg`],
+        ["REDLINE", `${selected.physics.engine.redlineRPM} rpm`],
+        [
+          "GEARBOX",
+          `${selected.physics.transmission.gearRatios.length}-speed auto`,
+        ],
+      ]
+    : []
   return (
-    <div className="absolute inset-0 flex items-center justify-center bg-gradient-to-b from-black/70 via-black/55 to-black/75">
-      <div className="relative w-[460px] overflow-hidden rounded-3xl border border-white/10 bg-[#0b0e14]/90 text-center shadow-[0_30px_100px_rgba(0,0,0,0.7)] backdrop-blur-md">
-        {stripe}
-        <div className="px-10 pt-9 pb-8">
-          <div className="text-[11px] font-semibold tracking-[0.4em] text-[#8f99a8]">
-            M PERFORMANCE
-          </div>
-          <h1 className="mt-2 text-5xl font-bold tracking-tight text-white">
-            BMW M3
+    <div className="pointer-events-none absolute inset-0 flex flex-col md:flex-row">
+      {/* 3D stage is the live scene behind (showroom orbit cam). The
+          carousel arrows float over it, flanking the car. */}
+      <div className="relative min-h-[30vh] flex-1">
+        <button
+          onClick={onPrevCar}
+          aria-label="Previous car"
+          className="pointer-events-auto absolute top-1/2 left-3 -translate-y-1/2 rounded-full border border-white/15 bg-black/55 p-3 text-2xl font-bold text-white backdrop-blur transition hover:bg-black/80 active:scale-95 md:left-6"
+        >
+          <ChevronLeft />
+        </button>
+        <button
+          onClick={onNextCar}
+          aria-label="Next car"
+          className="pointer-events-auto absolute top-1/2 right-3 -translate-y-1/2 rounded-full border border-white/15 bg-black/55 p-3 text-2xl font-bold text-white backdrop-blur transition hover:bg-black/80 active:scale-95 md:right-6"
+        >
+          <ChevronRight />
+        </button>
+        <div className="pointer-events-auto absolute bottom-3 left-1/2 -translate-x-1/2 rounded-full border border-white/10 bg-black/55 px-4 py-1 text-[12px] tracking-widest text-gray-200 backdrop-blur">
+          {idx + 1} / {cars.length}
+        </div>
+      </div>
+      <div className="pointer-events-auto relative max-h-[62vh] w-full overflow-y-auto border-white/10 bg-[#0b0e14]/92 shadow-[0_30px_100px_rgba(0,0,0,0.7)] backdrop-blur-md no-scrollbar md:max-h-none md:h-full md:w-[400px] md:border-l">
+        <div className="p-6">
+          <h1 className="mt-1 text-3xl font-bold tracking-tight text-white">
+            {selected?.name ?? "Choose your car"}
           </h1>
-          <p className="mt-3 text-[14px] leading-6 text-gray-300">
-            Take the road alone, line up against AI, or race friends online.
+          <p className="mt-1 text-[13px] leading-5 text-gray-300">
+            {selected?.blurb}
           </p>
 
-          <div className="mt-6 text-left">
+          <div className="mt-4 grid grid-cols-2 gap-1.5">
+            {specRows.map(([k, v]) => (
+              <div key={k} className="rounded-xl bg-white/[0.05] px-3 py-2">
+                <div className="text-[10px] font-semibold tracking-[0.18em] text-[#8f99a8]">
+                  {k}
+                </div>
+                <div className="text-[15px] font-bold text-white tabular-nums">
+                  {v}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-4 text-left">
+            <div className="text-[11px] font-semibold tracking-[0.22em] text-[#8f99a8]">
+              PAINT
+            </div>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {PAINTS.map((p) => {
+                const active = (paint ?? null) === p.value
+                return (
+                  <button
+                    key={p.name}
+                    onClick={() => onPaint(p.value)}
+                    title={p.name === "Stock" ? "Stock GLB paint" : p.name}
+                    aria-label={p.name}
+                    className={`flex h-9 w-9 items-center justify-center rounded-full border-2 transition active:scale-95 ${
+                      active
+                        ? "border-white"
+                        : "border-white/20 hover:border-white/50"
+                    }`}
+                    style={
+                      p.value === null
+                        ? {
+                            background:
+                              "conic-gradient(#e30613,#f5c518,#1f8a4c,#1f6feb,#000)",
+                          }
+                        : {
+                            background: `#${p.value.toString(16).padStart(6, "0")}`,
+                          }
+                    }
+                  />
+                )
+              })}
+            </div>
+          </div>
+
+          <div className="mt-5 text-left">
             <div className="text-[11px] font-semibold tracking-[0.22em] text-[#8f99a8]">
               RIVALS (AI)
             </div>
@@ -79,6 +195,33 @@ export function RaceMenu({
                   {n}
                 </button>
               ))}
+            </div>
+            <div className="mt-4 text-[11px] font-semibold tracking-[0.22em] text-[#8f99a8]">
+              AI FIELD — RIVALS DRAW RANDOMLY FROM THESE
+            </div>
+            {pool.length === 0 && (
+              <div className="mt-1 text-[12px] text-gray-400">
+                None selected — the full roster will show up.
+              </div>
+            )}
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {cars.map((c) => {
+                const on = pool.includes(c.id)
+                return (
+                  <button
+                    key={c.id}
+                    onClick={() => onTogglePool(c.id)}
+                    title={on ? "Exclude from AI grid" : "Include in AI grid"}
+                    className={`rounded-xl px-3 py-2 text-[12px] font-semibold transition ${
+                      on
+                        ? "bg-white/12 text-white hover:bg-white/18"
+                        : "bg-white/[0.03] text-gray-500 line-through hover:bg-white/8"
+                    }`}
+                  >
+                    {c.shortName}
+                  </button>
+                )
+              })}
             </div>
             <div className="mt-4 text-[11px] font-semibold tracking-[0.22em] text-[#8f99a8]">
               DISTANCE
@@ -121,7 +264,7 @@ export function RaceMenu({
           >
             Just drive (Free Roam)
           </button>
-          <div className="mt-3 text-[12px] text-gray-500">
+          <div className="mt-3 text-center text-[12px] text-gray-500">
             Enter starts a free drive · P toggles the parking brake
           </div>
         </div>
@@ -132,7 +275,12 @@ export function RaceMenu({
 
 export function RaceHud({ race }: { race: RaceSnapshot }) {
   if (!race.active || race.finished) return null
-  const kmLeft = Math.max(0, (race.distanceM - (race.standings.find((s) => s.isPlayer)?.progressM ?? 0)) / 1000)
+  const kmLeft = Math.max(
+    0,
+    (race.distanceM -
+      (race.standings.find((s) => s.isPlayer)?.progressM ?? 0)) /
+      1000,
+  )
   return (
     <>
       <div className="pointer-events-none absolute top-5 left-1/2 flex -translate-x-1/2 items-center gap-3 rounded-full border border-white/12 bg-black/55 px-4 py-2 text-white backdrop-blur">
@@ -145,7 +293,9 @@ export function RaceHud({ race }: { race: RaceSnapshot }) {
           {kmLeft.toFixed(2)} km left
         </span>
         <span className="h-4 w-px bg-white/20" />
-        <span className="text-[13px] tabular-nums">{formatTime(race.elapsed)}</span>
+        <span className="text-[13px] tabular-nums">
+          {formatTime(race.elapsed)}
+        </span>
       </div>
       {race.phase === "heads" && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
@@ -232,7 +382,7 @@ export function RaceLiveBoard({ race }: { race: RaceSnapshot }) {
       </div>
       <div
         ref={scrollRef}
-        className="pointer-events-auto max-h-[46vh] overflow-y-auto rounded-xl pr-0.5 [scrollbar-width:thin]"
+        className="pointer-events-auto max-h-[46vh] overflow-y-auto rounded-xl pr-0.5 no-scrollbar"
       >
         <div className="relative" style={{ height: snap.length * BOARD_ROW_H }}>
           {snap.map((s, i) => (
@@ -300,7 +450,7 @@ export function RaceResults({
               ? ` · ${formatTime(player.finishTime)}`
               : ""}
           </p>
-          <ol className="mt-5 max-h-[38vh] space-y-1.5 overflow-y-auto pr-1 [scrollbar-width:thin]">
+          <ol className="mt-5 max-h-[38vh] space-y-1.5 overflow-y-auto pr-1 no-scrollbar">
             {race.standings.map((row, i) => (
               <li
                 key={row.id}

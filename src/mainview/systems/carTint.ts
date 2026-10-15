@@ -2,7 +2,7 @@ import * as THREE from "three"
 
 const PAINT_NAMES = /body|paint|chassis|hood|door|bumper|fender|bonnet|shell/i
 const SKIP_NAMES =
-  /glass|window|light|lamp|wheel|tire|tyre|rim|brake|interior|chrome|mirror/i
+  /glass|window|light|lamp|wheel|tire|tyre|rim|brake|caliper|interior|chrome|mirror/i
 
 function isPaintMaterial(mat: THREE.Material, meshName: string): boolean {
   const name = `${mat.name} ${meshName}`
@@ -74,6 +74,44 @@ export const RIVAL_COLORS = [
   0xb45309,
   0x67e8f9,
 ]
+
+/** The player's paint when they haven't picked one: black. */
+export const DEFAULT_PLAYER_COLOR = 0x000000
+
+/**
+ * Rims render dark against black tires unless forced white. The GLB uses
+ * generic material names, but Material.029 is only ever referenced by the
+ * four wheel meshes (tires are Material.016, pure black) — so match by
+ * name. Materials are cloned, never mutated: the source model is shared
+ * across every car. Call before any geometry merging.
+ */
+const RIM_MATERIAL = /^Material\.029$/i
+export function whitenRims(root: THREE.Object3D): void {
+  const cache = new Map<string, THREE.MeshStandardMaterial>()
+  root.traverse((o) => {
+    const mesh = o as THREE.Mesh
+    if (!mesh.isMesh || !mesh.material) return
+    const src = Array.isArray(mesh.material) ? mesh.material : [mesh.material]
+    let changed = false
+    const next = src.map((mat) => {
+      const std = mat as THREE.MeshStandardMaterial
+      if (!std.color || !RIM_MATERIAL.test(std.name ?? "")) return mat
+      changed = true
+      let white = cache.get(std.uuid)
+      if (!white) {
+        white = std.clone()
+        // Flat white, non-metal: metallic surfaces go dark with no envmap.
+        white.color.set(0xffffff)
+        white.metalness = 0
+        white.roughness = Math.min(white.roughness ?? 0.5, 0.45)
+        cache.set(std.uuid, white)
+      }
+      return white
+    })
+    if (!changed) return
+    mesh.material = Array.isArray(mesh.material) ? next : next[0]
+  })
+}
 
 export function rivalColor(index: number): number {
   return RIVAL_COLORS[index % RIVAL_COLORS.length]

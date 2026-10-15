@@ -1,12 +1,20 @@
 import * as RAPIER from "@dimforge/rapier3d-compat"
 import * as THREE from "three"
-import { CAR_PHYSICS } from "../constants/physics"
+import {
+  DEFAULT_PHYSICS_CONFIG,
+  type CarPhysicsConfig,
+} from "../constants/physics"
+import type { CarDashConfig } from "../constants/cars"
 import type { DriveInput } from "./InputManager"
-import { SuspensionSystem, type WheelSuspState } from "./Suspension"
+import {
+  SuspensionSystem,
+  type WheelDef,
+  type WheelSuspState,
+} from "./Suspension"
 import { WheelDynamics, estimateWheelInertia } from "./WheelDynamics"
 import { TireModel, type TireResult } from "./TireModel"
 
-export type Gear = -1 | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8
+export type Gear = -1 | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9
 
 export interface CarTelemetry {
   speedKmh: number
@@ -23,6 +31,8 @@ export interface CarTelemetry {
   parkingBrake: boolean
   slipRatio: number
   drift: boolean
+  /** Dash scaling for this car (tacho/speedo full-scale + redline). */
+  dash: CarDashConfig
 }
 
 function lerp(a: number, b: number, t: number) {
@@ -49,21 +59,35 @@ function torqueMult(
   return 0
 }
 
-const WHEEL_LOCAL = [
+/** Legacy M3 hardpoints — the default when no car preset is passed. */
+export const DEFAULT_WHEELS: [WheelDef, WheelDef, WheelDef, WheelDef] = [
   { x: -0.76, z: -1.51, front: true, left: true },
   { x: 0.76, z: -1.51, front: true, left: false },
   { x: -0.76, z: 1.31, front: false, left: true },
   { x: 0.76, z: 1.31, front: false, left: false },
 ]
 
+/** Legacy M3 dash scaling — must match the M3 entry in constants/cars. */
+export const DEFAULT_DASH: CarDashConfig = {
+  maxRpm: 8000,
+  redFromRpm: 6750,
+  maxKmh: 340,
+}
+
 export class CarController {
   body: RAPIER.RigidBody
   world: RAPIER.World
   R: typeof RAPIER
+  /** Active vehicle tune — one instance per car, never the global. */
+  readonly P: CarPhysicsConfig
+  readonly wheelDefs: readonly WheelDef[]
+  readonly dash: CarDashConfig
+  /** Wheelbase measured off the hardpoints (drives the steering cap). */
+  readonly wheelbase: number
 
   gear: Gear = 1
   autoMode = true
-  rpm: number = CAR_PHYSICS.engine.idleRPM
+  rpm: number
   private shiftTimer = 0
   private clutch = 1
   private wheelOmega = 0
@@ -100,14 +124,38 @@ export class CarController {
 
   private filteredSpeed = 0
 
-  constructor(world: RAPIER.World, body: RAPIER.RigidBody, R: typeof RAPIER) {
+  constructor(
+    world: RAPIER.World,
+    body: RAPIER.RigidBody,
+    R: typeof RAPIER,
+    config: CarPhysicsConfig = DEFAULT_PHYSICS_CONFIG,
+    wheels: readonly WheelDef[] = DEFAULT_WHEELS,
+    dash: CarDashConfig = DEFAULT_DASH,
+  ) {
     this.world = world
     this.body = body
     this.R = R
-    this.body.setLinearDamping(0.005)
+    this.P = config
+    this.wheelDefs = wheels
+    this.dash = dash
+    this.rpm = config.engine.idleRPM
+    const fronts = wheels.filter((w) => w.front)
+    const rears = wheels.filter((w) => !w.front)
+    const avg = (ws: readonly WheelDef[]) =>
+      ws.reduce((a, w) => a + w.z, 0) / Math.max(1, ws.length)
+    const wb = Math.abs(avg(rears) - avg(fronts))
+    this.wheelbase = wb > 1 ? wb : 2.85
+    this.body.setLinearDamping(0.001)
     this.body.setAngularDamping(0.55)
-    this.suspension = new SuspensionSystem(world, body, R, WHEEL_LOCAL)
-    const P0 = CAR_PHYSICS
+    const susp = config.wheels.suspension
+    this.suspension = new SuspensionSystem(world, body, R, [...wheels], {
+      springRate: susp.springRate,
+      damperRate: susp.damperRate,
+      travel: susp.travel,
+      antiRollBarFront: susp.antiRollBarFront,
+      antiRollBarRear: susp.antiRollBarRear,
+    })
+    const P0 = config
     const wheelMass = (P0.mass.frontWheel + P0.mass.rearWheel) / 2
     this.wheelDynamics = new WheelDynamics(
       P0.wheels.radius,
@@ -145,7 +193,7 @@ export class CarController {
     this.body.setLinvel({ x: 0, y: 0, z: 0 }, true)
     this.body.setAngvel({ x: 0, y: 0, z: 0 }, true)
     this.gear = 1
-    this.rpm = CAR_PHYSICS.engine.idleRPM
+    this.rpm = this.P.engine.idleRPM
     this.shiftTimer = 0
     this.feedT = 99
     this.prevThrottle = 0
@@ -189,13 +237,13 @@ export class CarController {
   }
 
   private brakeTorqueFor(
-    w: (typeof WHEEL_LOCAL)[number],
+    w: WheelDef,
     input: DriveInput,
     speedKmh: number,
     vLongPatch: number,
     simTime: number,
   ): number {
-    const P = CAR_PHYSICS
+    const P = this.P
     const brakeMax = w.front
       ? P.wheels.brakeForce.front
       : P.wheels.brakeForce.rear
@@ -241,7 +289,7 @@ export class CarController {
   }
 
   update(dt: number, input: DriveInput): CarTelemetry {
-    const P = CAR_PHYSICS
+    const P = this.P
     dt = Math.min(dt, P.simulation.maxFrameDt)
     this.simTime += dt
 
@@ -283,7 +331,9 @@ export class CarController {
     const steerFactor =
       1 /
       (1 + Math.pow(speedKmh / S.speedFalloffKmh, 2) * S.speedSensitivity * 3)
-    const gripCap = Math.atan((2.85 * 32) / Math.max(40, fwdSpeed * fwdSpeed))
+    const gripCap = Math.atan(
+      (this.wheelbase * 32) / Math.max(40, fwdSpeed * fwdSpeed),
+    )
     const steerCap = Math.max(gripCap, S.minAngleAtSpeed)
     const targetSteer = clamp(
       input.steer * S.maxAngle * steerFactor,
@@ -312,7 +362,8 @@ export class CarController {
 
     let gearRatio = 0
     if (this.gear > 0) gearRatio = ratios[this.gear - 1] * finalDrive
-    else if (this.gear === -1) gearRatio = 3.2 * finalDrive
+    else if (this.gear === -1)
+      gearRatio = P.transmission.reverseRatio * finalDrive
 
     let targetRpm: number
     if (this.gear === 0) {
@@ -377,8 +428,12 @@ export class CarController {
     if (this.autoMode && this.shiftTimer <= 0 && this.gear >= 1) {
       // Upshift whenever past the upshift point — on or off throttle — so
       // coasting down from speed walks up the gears instead of hanging in
-      // a low gear at the limiter.
-      if (this.rpm > P.transmission.autoUpshiftRPM && this.gear < 8) {
+      // a low gear at the limiter. Top gear = however many ratios the car
+      // has (7/8/9), never a hardcoded 8.
+      if (
+        this.rpm > P.transmission.autoUpshiftRPM &&
+        this.gear < ratios.length
+      ) {
         this.doShift(1)
       } else if (this.rpm < 1400 && this.gear > 1) {
         this.doShift(-1)
@@ -431,19 +486,25 @@ export class CarController {
               1,
             )
         : 1
-    let driveTorquePerRear = 0
+    // AWD: the total shaft torque is split front/rear per car, then
+    // divided per wheel. RWD cars (split 0) behave exactly as before.
+    const split = P.drivetrain.frontTorqueSplit
+    const rearDriven = split < 0.999
+    const frontDriven = split > 0.001
+    const drivenCount = (rearDriven ? 2 : 0) + (frontDriven ? 2 : 0)
+    let driveTorqueTotal = 0
+    let driveDir = 1
+    let feedFactor = 1
     if (this.gear !== 0) {
       const dir = this.gear === -1 ? -1 : 1
-      driveTorquePerRear = (engineTorque * gearRatio * 0.9 * tcMult * dir) / 2
-      if (this.launchArmed) driveTorquePerRear = 0
+      driveDir = dir
+      driveTorqueTotal = engineTorque * gearRatio * 0.9 * tcMult * dir
+      if (this.launchArmed) driveTorqueTotal = 0
       // Torque-by-gear (like every modern performance car): 1st/2nd carry
-      // far more twist than the rear tires can hold, so cap them at the
-      // grip limit instead of boiling the tires. TC stays as spike guard.
-      // Handbrake bypasses everything (burnouts/drifts need the excess).
-      if (dir > 0 && this.gear === 1 && !input.handbrake)
-        driveTorquePerRear = Math.min(driveTorquePerRear, 2400)
-      else if (dir > 0 && this.gear === 2 && !input.handbrake)
-        driveTorquePerRear = Math.min(driveTorquePerRear, 3800)
+      // far more twist than the tires can hold, so each driven wheel is
+      // capped at the grip limit instead of boiling the tires. TC stays
+      // as spike guard. Handbrake bypasses everything (burnouts/drifts
+      // need the excess).
       // Clutch feed: on a full-throttle stab (or LC clutch dump) in 1st,
       // engage progressively over ~0.7 s instead of flash-spinning the
       // light wheels on the initial hit.
@@ -460,7 +521,7 @@ export class CarController {
       this.prevThrottle = input.throttle
       this.prevLaunching = this.launching
       if (dir > 0 && this.gear === 1 && input.throttle > 0.5) {
-        driveTorquePerRear *= Math.min(1, 0.25 + (0.75 * this.feedT) / 0.7)
+        feedFactor = Math.min(1, 0.25 + (0.75 * this.feedT) / 0.7)
       }
     }
 
@@ -471,7 +532,7 @@ export class CarController {
     let rearCount = 0
 
     interface WheelSolve {
-      w: (typeof WHEEL_LOCAL)[number]
+      w: WheelDef
       wi: number
       grounded: boolean
       load: number
@@ -501,8 +562,8 @@ export class CarController {
       else groundedWheels++
     }
 
-    for (let wi = 0; wi < WHEEL_LOCAL.length; wi++) {
-      const w = WHEEL_LOCAL[wi]
+    for (let wi = 0; wi < this.wheelDefs.length; wi++) {
+      const w = this.wheelDefs[wi]
       const st = suspStates[wi]
       const anchorWorld = st.anchorWorld
 
@@ -514,7 +575,19 @@ export class CarController {
       ).applyQuaternion(quat)
       wheelFwd.y = 0
       wheelFwd.normalize()
-      const driveT = w.front ? 0 : driveTorquePerRear
+      const driven = w.front ? frontDriven : rearDriven
+      let driveT = 0
+      if (driven && this.gear !== 0) {
+        driveT = w.front
+          ? (driveTorqueTotal * split) / 2
+          : (driveTorqueTotal * (1 - split)) / 2
+        if (driveDir > 0 && !input.handbrake) {
+          if (this.gear === 1) driveT = Math.min(driveT, P.drivetrain.torqueCapGear1)
+          else if (this.gear === 2)
+            driveT = Math.min(driveT, P.drivetrain.torqueCapGear2)
+        }
+        driveT *= feedFactor
+      }
       const vLongPre = st.pointVel.dot(wheelFwd)
       const brakeM = this.brakeTorqueFor(
         w,
@@ -568,6 +641,7 @@ export class CarController {
 
     for (const s of solves) {
       const { w, wi } = s
+      const driven = w.front ? frontDriven : rearDriven
       if (!s.grounded) {
         this.lastWheelLong[wi] = 0
         this.lastTireDiag[wi] = this.tireModel.eval({
@@ -595,7 +669,7 @@ export class CarController {
 
       let legacyLong = 0
       if (this.gear >= 1 && fwdSpeed < 0.05 && fwdSpeed > -2) {
-        if (!w.front) legacyLong += clamp(-fwdSpeed * 1500, 0, 2000)
+        if (driven) legacyLong += clamp(-fwdSpeed * 1500, 0, 2000)
       }
       if (
         this.gear >= 1 &&
@@ -604,26 +678,26 @@ export class CarController {
         fwdSpeed > -0.5 &&
         fwdSpeed < 3.5
       ) {
-        if (!w.front)
+        if (driven)
           legacyLong +=
-            (P.transmission.torqueConverter.creepForce / 2) *
+            (P.transmission.torqueConverter.creepForce / Math.max(1, drivenCount)) *
             clamp(1 - fwdSpeed / 3.5, 0, 1)
       }
       if (this.gear === -1) {
         if (
-          !w.front &&
+          driven &&
           input.throttle < 0.05 &&
           input.brake < 0.05 &&
           fwdSpeed < 0.5 &&
           fwdSpeed > -3
         ) {
           legacyLong -=
-            (P.transmission.torqueConverter.creepForceReverse / 2) *
+            (P.transmission.torqueConverter.creepForceReverse / Math.max(1, drivenCount)) *
             clamp(1 + fwdSpeed / 3, 0, 1)
         }
       }
       if (
-        !w.front &&
+        driven &&
         input.throttle < 0.05 &&
         this.gear >= 1 &&
         Math.abs(res.vx) > 1
@@ -632,7 +706,12 @@ export class CarController {
         const engFric =
           P.engine.frictionTorqueBase +
           this.rpm * P.engine.frictionTorqueRPMFactor
-        const coastT = (engFric * gearRatio * 0.9 * lockup) / 2 / wheelRadius
+        // Unlocked torque converter slips on lift-off: roughly half the
+        // locked-clutch figure reaches the wheels. (The old chassis-level
+        // engine-braking force applied this SAME friction a second time —
+        // that double application is what made lift-off feel like braking.)
+        const coastT =
+          (engFric * gearRatio * 0.9 * lockup * 0.5) / 2 / wheelRadius
         legacyLong += clamp(-Math.sign(res.vx) * coastT, -2500, 2500)
       }
 
@@ -640,12 +719,12 @@ export class CarController {
       // Relaxation rate floored so contact force exists quickly even from
       // a standstill.
       const rate =
-        (Math.abs(res.vx) + 0.5) / CAR_PHYSICS.wheels.relaxationLength
+        (Math.abs(res.vx) + 0.5) / P.wheels.relaxationLength
       lag.fx = (lag.fx + dt * rate * res.fx) / (1 + dt * rate)
       lag.fy = (lag.fy + dt * rate * res.fy) / (1 + dt * rate)
       this.lastTireDiag[wi] = res
 
-      if (!w.front) {
+      if (driven) {
         totalSlip += Math.abs(res.sx)
         rearSlipSum += res.sx
         rearCount++
@@ -707,22 +786,9 @@ export class CarController {
         true,
       )
     }
-    // Lift-off engine braking: off throttle in gear, the engine's own
-    // friction drags through the gearbox (friction torque × gear ratio).
-    // Kept gentle (~half the raw figure — an unlocked torque converter
-    // slips and absorbs much of it): just enough to feel the gearbox,
-    // never grabby. Only wakes up above ~6 km/h so creep owns the
-    // walking-pace zone unopposed (10 km/h stroll), and never reverses.
-    if (input.throttle < 0.05 && input.brake < 0.05 && this.gear >= 1 && vMag > 1) {
-      const engFric =
-        P.engine.frictionTorqueBase + this.rpm * P.engine.frictionTorqueRPMFactor
-      const engF =
-        Math.min((engFric * gearRatio * 0.9) / wheelRadius, 4000) *
-        0.5 *
-        clamp((speedKmh - 6) / 16, 0, 1)
-      const eb = vVec.clone().normalize().multiplyScalar(-engF)
-      this.body.applyImpulse({ x: eb.x * dt, y: 0, z: eb.z * dt }, true)
-    }
+    // NOTE: engine braking lives ONLY in the per-wheel coast path above
+    // (single application). A previous chassis-level copy of the same
+    // friction term doubled lift-off decel — removed.
     // GTA-style self-righting: upside down (or on a door) and nearly still,
     // throttle/brake rolls the car around its forward axis and steering
     // adds roll either way — hold W (and steer) to flip back onto the
@@ -816,6 +882,7 @@ export class CarController {
       parkingBrake: this.parkingBrake,
       slipRatio: this.slipRatioAvg,
       drift: this.drifting,
+      dash: this.dash,
     }
   }
 
@@ -829,7 +896,7 @@ export class CarController {
 
   private predictedRpm(gear: Gear): number {
     if (gear <= 0) return 0
-    const P = CAR_PHYSICS
+    const P = this.P
     const ratio =
       P.transmission.gearRatios[gear - 1] * P.transmission.finalDriveRatio
     return Math.abs((this.wheelOmega * ratio * 60) / (2 * Math.PI))
@@ -837,7 +904,9 @@ export class CarController {
 
   private manualShift(dir: 1 | -1) {
     if (this.shiftTimer > 0) return
-    const order: Gear[] = [-1, 0, 1, 2, 3, 4, 5, 6, 7, 8]
+    const n = this.P.transmission.gearRatios.length
+    const order: Gear[] = [-1, 0]
+    for (let g = 1; g <= n; g++) order.push(g as Gear)
     const i = order.indexOf(this.gear)
     const j = clamp(i + dir, 0, order.length - 1)
     if (j === i) return
@@ -847,29 +916,30 @@ export class CarController {
     if (
       order[j] >= 1 &&
       dir < 0 &&
-      this.predictedRpm(order[j]) > CAR_PHYSICS.engine.redlineRPM - 200
+      this.predictedRpm(order[j]) > this.P.engine.redlineRPM - 200
     )
       return
     this.gear = order[j]
-    this.shiftTimer = CAR_PHYSICS.transmission.shiftTimeManual
+    this.shiftTimer = this.P.transmission.shiftTimeManual
     this.afterShift()
   }
 
   private doShift(dir: 1 | -1) {
-    const next = clamp((this.gear as number) + dir, 1, 8) as Gear
+    const n = this.P.transmission.gearRatios.length
+    const next = clamp((this.gear as number) + dir, 1, n) as Gear
     if (next === this.gear) return
     if (
       dir < 0 &&
-      this.predictedRpm(next) > CAR_PHYSICS.engine.redlineRPM - 200
+      this.predictedRpm(next) > this.P.engine.redlineRPM - 200
     )
       return
     this.gear = next
-    this.shiftTimer = CAR_PHYSICS.transmission.shiftTimeAuto
+    this.shiftTimer = this.P.transmission.shiftTimeAuto
     this.afterShift()
   }
 
   private afterShift() {
-    const P = CAR_PHYSICS
+    const P = this.P
     if (this.gear === 0 || this.gear === -1) return
     const ratio =
       P.transmission.gearRatios[this.gear - 1] * P.transmission.finalDriveRatio

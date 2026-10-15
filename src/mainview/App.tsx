@@ -10,13 +10,29 @@ import {
   consumeSubstep,
   createFixedStepper,
 } from "./systems/PhysicsSystem"
-import { CarController, type CarTelemetry } from "./systems/CarController"
-import { WorldManager, roadCenterX, roadDirYaw, roadYaw } from "./systems/WorldManager"
+import {
+  CarController,
+  DEFAULT_DASH,
+  type CarTelemetry,
+} from "./systems/CarController"
+import {
+  WorldManager,
+  roadCenterX,
+  roadDirYaw,
+  roadYaw,
+} from "./systems/WorldManager"
 import { CarVisual } from "./systems/CarVisual"
 import { TireSmoke } from "./systems/TireSmoke"
 import { InputManager, type DriveInput } from "./systems/InputManager"
-import { AIDriver, carProgress, holdInput, makeProfile, stripEdges, type TrafficEntry } from "./systems/AIDriver"
-import { colorHex, rivalColor } from "./systems/carTint"
+import {
+  AIDriver,
+  carProgress,
+  holdInput,
+  makeProfile,
+  stripEdges,
+  type TrafficEntry,
+} from "./systems/AIDriver"
+import { DEFAULT_PLAYER_COLOR, colorHex, rivalColor } from "./systems/carTint"
 import {
   RACE_COUNTS,
   RACE_DISTANCES_KM,
@@ -31,9 +47,13 @@ import { SpeedLines } from "./ui/SpeedLines"
 import { MultiplayerManager } from "./systems/net/MultiplayerManager"
 import { MultiplayerLobby, MultiplayerHudBadge } from "./ui/MultiplayerLobby"
 import { NetDiagPanel } from "./ui/NetDiagPanel"
-import { netDiagEnabled, netDiagPhysicsTick } from "./systems/net/NetDiagnostics"
+import {
+  netDiagEnabled,
+  netDiagPhysicsTick,
+} from "./systems/net/NetDiagnostics"
 import type { PeerPlayer } from "./systems/net/types"
 import { CAR_PHYSICS } from "./constants/physics"
+import { CARS, DEFAULT_CAR_ID, getCar } from "./constants/cars"
 import { WORLD_CONFIG } from "./constants/world"
 
 const clamp = (v: number, lo: number, hi: number) =>
@@ -66,6 +86,7 @@ const initialTele: CarTelemetry = {
   parkingBrake: true,
   slipRatio: 0,
   drift: false,
+  dash: DEFAULT_DASH,
 }
 
 export default function App() {
@@ -113,6 +134,94 @@ export default function App() {
   const [distanceKm, setDistanceKm] =
     useState<(typeof RACE_DISTANCES_KM)[number]>(5)
   const [session, setSession] = useState(0)
+  // Selected car (registry id in constants/cars). Mirrored in a ref so
+  // the world-setup effect reads the pick that was current when the
+  // session was built. Persisted across visits.
+  const [carId, setCarId] = useState<string>(() => {
+    try {
+      return localStorage.getItem("oversteer_car") || DEFAULT_CAR_ID
+    } catch {
+      return DEFAULT_CAR_ID
+    }
+  })
+  const carIdRef = useRef(carId)
+  const garageApiRef = useRef<{
+    showCar: (id: string) => void
+    paint: (color: number | null) => void
+  } | null>(null)
+  const selectCar = (id: string) => {
+    carIdRef.current = id
+    setCarId(id)
+    try {
+      localStorage.setItem("oversteer_car", id)
+    } catch {}
+    multiplayerRef.current?.setLocalCarId(id)
+    // Garage preview: hot-swap the showroom model without rebuilding
+    // the world (the session rebuild on start applies the physics).
+    garageApiRef.current?.showCar(id)
+  }
+  const stepCar = (dir: 1 | -1) => {
+    const i = CARS.findIndex((c) => c.id === carIdRef.current)
+    const next = CARS[(i < 0 ? 0 : i + dir + CARS.length) % CARS.length]
+    selectCar(next.id)
+  }
+  // Player paint per car (hex or null = stock GLB paint). Falls back
+  // to each car's defaultTint when never picked. Persisted.
+  const [paint, setPaint] = useState<Record<string, number | null>>(() => {
+    try {
+      const raw = localStorage.getItem("oversteer_paint")
+      if (raw) {
+        const obj = JSON.parse(raw)
+        if (obj && typeof obj === "object") return obj
+      }
+    } catch {}
+    return {}
+  })
+  const paintRef = useRef(paint)
+  const paintFor = (id: string): number | undefined => {
+    const picked = paintRef.current[id]
+    if (picked !== undefined) return picked ?? undefined
+    return getCar(id).defaultTint ?? undefined
+  }
+  const setPaintFor = (id: string, color: number | null) => {
+    setPaint((prev) => {
+      const next = { ...prev, [id]: color }
+      paintRef.current = next
+      try {
+        localStorage.setItem("oversteer_paint", JSON.stringify(next))
+      } catch {}
+      return next
+    })
+    if (id === carIdRef.current) garageApiRef.current?.paint(color)
+  }
+  // Rival pool: which registry cars the AI grid may draw from. Empty
+  // means "no preference" and falls back to the full roster.
+  const [pool, setPool] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem("oversteer_pool")
+      if (raw) {
+        const arr = JSON.parse(raw)
+        if (Array.isArray(arr)) {
+          const known = arr.filter((id) => CARS.some((c) => c.id === id))
+          if (known.length > 0) return known
+        }
+      }
+    } catch {}
+    return CARS.map((c) => c.id)
+  })
+  const poolRef = useRef(pool)
+  const togglePool = (id: string) => {
+    setPool((prev) => {
+      const next = prev.includes(id)
+        ? prev.filter((x) => x !== id)
+        : [...prev, id]
+      poolRef.current = next
+      try {
+        localStorage.setItem("oversteer_pool", JSON.stringify(next))
+      } catch {}
+      return next
+    })
+  }
 
   const [showMultiplayerLobby, setShowMultiplayerLobby] = useState(false)
   const [netPeers, setNetPeers] = useState<PeerPlayer[]>([])
@@ -185,13 +294,33 @@ export default function App() {
     if (race.finished) {
       document.documentElement.style.cursor = ""
       document.body.style.cursor = ""
+      unlockEscapeKey()
       if (document.pointerLockElement) document.exitPointerLock?.()
     }
   }, [race.finished])
 
+  // Keyboard Lock: keep Escape for the game (pause menu) instead of the
+  // webview's exit-fullscreen default. This is the documented fix for
+  // fullscreen web apps (Chrome's "Better full screen mode" guide, and
+  // the accepted answer for "Preventing Electron from exiting fullscreen
+  // on Escape"). Locking does NOT swallow the key — keydown still fires,
+  // so the game's own Esc-to-pause keeps working. No-op with guards where
+  // the webview doesn't implement the API. Called from user gestures.
+  const lockEscapeKey = () => {
+    try {
+      ;(navigator as any).keyboard?.lock?.(["Escape"])?.catch?.(() => {})
+    } catch {}
+  }
+  const unlockEscapeKey = () => {
+    try {
+      ;(navigator as any).keyboard?.unlock?.()
+    } catch {}
+  }
+
   const lockCanvas = () => {
     document.documentElement.style.cursor = "none"
     document.body.style.cursor = "none"
+    lockEscapeKey()
     const el = rendererRef.current?.domElement as any
     try {
       try {
@@ -241,6 +370,7 @@ export default function App() {
     pausedRef.current = true
     setPaused(true)
     inputRef.current?.clear()
+    unlockEscapeKey()
     document.documentElement.style.cursor = ""
     document.body.style.cursor = ""
     if (document.pointerLockElement) document.exitPointerLock?.()
@@ -279,6 +409,7 @@ export default function App() {
     setLockHint(false)
     setRace(emptyRace)
     inputRef.current?.clear()
+    unlockEscapeKey()
     document.documentElement.style.cursor = ""
     document.body.style.cursor = ""
     if (document.pointerLockElement) document.exitPointerLock?.()
@@ -288,6 +419,20 @@ export default function App() {
 
   pauseFnRef.current = pauseGame
   resumeFnRef.current = resumeGame
+
+  // Garage carousel keys — menu only, never while driving. stepCar
+  // reads carIdRef so the handler never goes stale.
+  useEffect(() => {
+    if (started || loading || showMultiplayerLobby) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code === "ArrowLeft") stepCar(-1)
+      else if (e.code === "ArrowRight") stepCar(1)
+      else return
+      e.preventDefault()
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [started, loading, showMultiplayerLobby])
 
   useEffect(() => {
     let disposed = false
@@ -299,7 +444,7 @@ export default function App() {
       try {
         const mount = mountRef.current!
         if (disposed) return
-      renderer = new THREE.WebGLRenderer({ antialias: true })
+        renderer = new THREE.WebGLRenderer({ antialias: true })
         renderer.setSize(mount.clientWidth, mount.clientHeight)
         renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75))
         renderer.shadowMap.enabled = true
@@ -337,8 +482,15 @@ export default function App() {
 
         const net = multiplayerRef.current
         if (net) {
+          net.setLocalCarId(carIdRef.current)
           net.attachScene(scene, baseUrl, world, R)
         }
+
+        const playerDef = getCar(carIdRef.current)
+        // Tall cars (G 63/Urus) need the chase camera riding higher, or
+        // the roof fills the frame and the road ahead disappears.
+        const camHeightBoost =
+          (playerDef.physics.dimensions.height - 1.43) * 0.6
 
         const setup = raceSetupRef.current
         const rivalCount = setup?.rivals ?? 0
@@ -377,10 +529,7 @@ export default function App() {
           const finishTex = new THREE.CanvasTexture(fc)
           finishTex.colorSpace = THREE.SRGBColorSpace
           finishTex.anisotropy = 4
-          const stripGeo = new THREE.PlaneGeometry(
-            WORLD_CONFIG.road.width,
-            3,
-          )
+          const stripGeo = new THREE.PlaneGeometry(WORLD_CONFIG.road.width, 3)
           stripGeo.rotateX(-Math.PI / 2)
           const strip = new THREE.Mesh(
             stripGeo,
@@ -435,16 +584,28 @@ export default function App() {
         const playerX = spawned
           ? roadCenterX(playerSlot.s) + nx0 * playerSlot.lateral
           : roadCenterX(0)
-        const playerZ = spawned
-          ? -playerSlot.s + nz0 * playerSlot.lateral
-          : 0
+        const playerZ = spawned ? -playerSlot.s + nz0 * playerSlot.lateral : 0
         const startX = playerX
-        const body = createChassisBody(world, playerX, 0.72, playerZ)
+        const body = createChassisBody(
+          world,
+          playerX,
+          0.72,
+          playerZ,
+          playerDef.physics.dimensions,
+          playerDef.physics.mass.chassis,
+        )
         const q0 = new THREE.Quaternion().setFromEuler(
           new THREE.Euler(0, yaw0, 0),
         )
         body.setRotation({ x: q0.x, y: q0.y, z: q0.z, w: q0.w }, true)
-        const car = new CarController(world, body, R)
+        const car = new CarController(
+          world,
+          body,
+          R,
+          playerDef.physics,
+          playerDef.wheels,
+          playerDef.dash,
+        )
 
         interface Rival {
           car: CarController
@@ -467,7 +628,25 @@ export default function App() {
           hi: boolean
         }
         const rivals: Rival[] = []
+        // AI grid draws RANDOMLY from the player's rival pool (menu
+        // "AI FIELD" toggles, persisted). Empty pool = whole roster.
+        // Shuffled per race so the grid never looks the same twice.
+        const poolIds = poolRef.current.length
+          ? poolRef.current
+          : CARS.map((c) => c.id)
+        const poolDefs = CARS.filter((c) => poolIds.includes(c.id))
+        const gridPool = poolDefs.length > 0 ? poolDefs : [...CARS]
+        for (let i = gridPool.length - 1; i > 0; i--) {
+          const j = (Math.random() * (i + 1)) | 0
+          const tmp = gridPool[i]
+          gridPool[i] = gridPool[j]
+          gridPool[j] = tmp
+        }
+        const rivalCounts = new Map<string, number>()
         for (let i = 0; i < rivalCount; i++) {
+          const rivalDef = gridPool[i % gridPool.length]
+          const seen = (rivalCounts.get(rivalDef.id) ?? 0) + 1
+          rivalCounts.set(rivalDef.id, seen)
           const slot = aiSlotOf(i)
           const g = gridSlot(slot, gridCount)
           const s0 = g.s
@@ -479,15 +658,32 @@ export default function App() {
             roadCenterX(s0) + nx * g.lateral,
             0.72,
             -s0 + nz * g.lateral,
+            rivalDef.physics.dimensions,
+            rivalDef.physics.mass.chassis,
           )
-          const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, yaw, 0))
+          const q = new THREE.Quaternion().setFromEuler(
+            new THREE.Euler(0, yaw, 0),
+          )
           rb.setRotation({ x: q.x, y: q.y, z: q.z, w: q.w }, true)
-          const rc = new CarController(world, rb, R)
+          const rc = new CarController(
+            world,
+            rb,
+            R,
+            rivalDef.physics,
+            rivalDef.wheels,
+            rivalDef.dash,
+          )
           const color = rivalColor(i)
           const vis = new CarVisual()
           vis.castShadow = i < 2
           try {
-            await vis.load(baseUrl, color)
+            await vis.load(baseUrl, color, {
+              modelFile: rivalDef.modelFile,
+              targetLength: rivalDef.physics.dimensions.length,
+              pivots: rivalDef.pivots,
+              wheelSpots: rivalDef.wheels,
+              wheelRadius: rivalDef.physics.wheels.radius,
+            })
           } catch (e) {
             console.warn("rival model failed", e)
           }
@@ -496,7 +692,7 @@ export default function App() {
             car: rc,
             visual: vis,
             ai: new AIDriver(makeProfile(i)),
-            name: `M3 ${i + 1}`,
+            name: `${rivalDef.shortName} ${seen}`,
             color: colorHex(color),
             progress: s0,
             finished: false,
@@ -518,12 +714,19 @@ export default function App() {
 
         {
           const zeroInput = {
-            throttle: 0, brake: 0, steer: 0, handbrake: false,
-            upshiftPressed: false, downshiftPressed: false,
-            toggleModePressed: false, toggleLaunchPressed: false,
+            throttle: 0,
+            brake: 0,
+            steer: 0,
+            handbrake: false,
+            upshiftPressed: false,
+            downshiftPressed: false,
+            toggleModePressed: false,
+            toggleLaunchPressed: false,
             toggleParkPressed: false,
-            resetPressed: false, toggleCameraPressed: false,
-            startPressed: false, escapePressed: false,
+            resetPressed: false,
+            toggleCameraPressed: false,
+            startPressed: false,
+            escapePressed: false,
           }
           const allCars = [car, ...rivals.map((r) => r.car)]
           for (let i = 0; i < 120; i++) {
@@ -536,11 +739,26 @@ export default function App() {
         // (and hit) the cars around it instead of only the road.
         const allBodies = [body, ...rivals.map((r) => r.car.body)]
 
-        const visual = new CarVisual()
+        let visual = new CarVisual()
+        // Player paint: explicit pick, else the car's default (black for
+        // the M3, stock GLB paint for the rest).
+        const playerPaint = (id: string): number | undefined => {
+          if (net?.roomId) return net.localColor
+          return paintFor(id)
+        }
         try {
-          await visual.load(baseUrl, net?.roomId ? net.localColor : undefined)
+          await visual.load(baseUrl, playerPaint(playerDef.id), {
+            modelFile: playerDef.modelFile,
+            targetLength: playerDef.physics.dimensions.length,
+            pivots: playerDef.pivots,
+            wheelSpots: playerDef.wheels,
+            wheelRadius: playerDef.physics.wheels.radius,
+          })
         } catch (e) {
-          console.warn("bmw model failed, continuing with fallback wheels", e)
+          console.warn(
+            "player model failed, continuing with fallback wheels",
+            e,
+          )
         }
         if (disposed) {
           try {
@@ -549,6 +767,53 @@ export default function App() {
           return
         }
         scene.add(visual.group)
+        // Garage preview API: the menu carousel hot-swaps the parked
+        // showroom model. Latest call wins; ignored once driving (the
+        // session rebuild on start owns the car from there).
+        {
+          let showToken = 0
+          garageApiRef.current = {
+            showCar: (id: string) => {
+              const my = ++showToken
+              if (startedRef.current) return
+              const def = getCar(id)
+              const next = new CarVisual()
+              next
+                .load(baseUrl, playerPaint(id), {
+                  modelFile: def.modelFile,
+                  targetLength: def.physics.dimensions.length,
+                  pivots: def.pivots,
+                  wheelSpots: def.wheels,
+                  wheelRadius: def.physics.wheels.radius,
+                })
+                .then(() => {
+                  if (my !== showToken || disposed || startedRef.current) return
+                  scene.remove(visual.group)
+                  visual = next
+                  scene.add(visual.group)
+                })
+                .catch((e) => {
+                  console.warn("garage preview failed", e)
+                })
+            },
+            // Live recolor of the parked showroom car (no reload).
+            // null = back to stock GLB paint, which needs a reload.
+            // So does the FIRST pick on a stock-paint car: with no tint
+            // pass at load there are no clones for setTint to recolor.
+            paint: (color: number | null) => {
+              if (startedRef.current || disposed) return
+              if (color === null || !visual.hasTint()) {
+                garageApiRef.current?.showCar(carIdRef.current)
+                return
+              }
+              try {
+                visual.setTint(color)
+              } catch (e) {
+                console.warn("garage paint failed", e)
+              }
+            },
+          }
+        }
 
         let raceActive = rivalCount > 0 || isNetRace
         let raceFinished = false
@@ -603,9 +868,9 @@ export default function App() {
         let dynPR = prCap
         let dynCooldown = 0
         const camPos = new THREE.Vector3(startX, 3, 8)
+        const showDesired = new THREE.Vector3()
         const camLook = new THREE.Vector3()
         const smoothFwd = new THREE.Vector3(0, 0, -1)
-        let lookAheadSm = 6
 
         let camYaw = 0
         let camPitch = 0
@@ -625,7 +890,12 @@ export default function App() {
           tryLock()
         }
         const tryLock = () => {
-          if (!startedRef.current || lockWanted) return
+          // Never (re)lock while paused: the retry timer, the 800 ms guard
+          // and the gesture handler below must not recapture the mouse over
+          // the pause menu — that flicker (unlock, cursor flashes, cursor
+          // vanishes again) is the "exits and instantly re-enters" bug.
+          // Resume/start paths unlock this by unpausing first.
+          if (!startedRef.current || pausedRef.current || lockWanted) return
           lockWanted = true
           const el = dom as any
           if (!el.requestPointerLock) {
@@ -663,7 +933,11 @@ export default function App() {
           if (startedRef.current && !document.pointerLockElement)
             lockWanted = false
         }
-        const onGesture = () => {
+        const onGesture = (e: Event) => {
+          // Escape natively exits pointer lock — re-requesting inside its
+          // own keydown races the browser default (the lock drops and is
+          // instantly re-grabbed). The pause/resume paths lock explicitly.
+          if ((e as KeyboardEvent).key === "Escape") return
           if (startedRef.current && !document.pointerLockElement) tryLock()
         }
         document.addEventListener("pointermove", onForceHide)
@@ -671,7 +945,9 @@ export default function App() {
         document.addEventListener("keydown", onGesture)
         document.addEventListener("pointerlockerror", onForceHide)
         const onPointerDown = (e: PointerEvent) => {
-          if (startedRef.current) hideCursor()
+          // While paused the cursor must stay visible for the menu — only
+          // hide/capture while actually driving.
+          if (startedRef.current && !pausedRef.current) hideCursor()
           orbiting = true
           lastPX = e.clientX
           lastPY = e.clientY
@@ -695,7 +971,7 @@ export default function App() {
             lastPX = e.clientX
             lastPY = e.clientY
             camYaw -= dx * 0.0052
-            camPitch = Math.max(-0.15, Math.min(0.5, camPitch + dy * 0.0032))
+            camPitch = Math.max(-0.5, Math.min(0.5, camPitch + dy * 0.0032))
             lastOrbit = performance.now() / 1000
           }
         }
@@ -729,9 +1005,7 @@ export default function App() {
           }
           // Shown whenever driving without the mouse (post-blur coast as
           // well as a denied lock request), not just after a lost lock.
-          setLockHint(
-            startedRef.current && !pausedRef.current && !mouseLocked,
-          )
+          setLockHint(startedRef.current && !pausedRef.current && !mouseLocked)
         }
         dom.addEventListener("pointerdown", onPointerDown)
         dom.addEventListener("pointermove", onPointerMove)
@@ -775,11 +1049,15 @@ export default function App() {
             if (startedRef.current && !pausedRef.current && dynCooldown <= 0) {
               if (emaMs > 17.5 && dynPR > 0.7) {
                 dynPR = Math.max(0.7, dynPR - 0.2)
-                renderer!.setPixelRatio(Math.min(window.devicePixelRatio, dynPR))
+                renderer!.setPixelRatio(
+                  Math.min(window.devicePixelRatio, dynPR),
+                )
                 dynCooldown = 2
               } else if (emaMs < 13 && dynPR < prCap) {
                 dynPR = Math.min(prCap, dynPR + 0.1)
-                renderer!.setPixelRatio(Math.min(window.devicePixelRatio, dynPR))
+                renderer!.setPixelRatio(
+                  Math.min(window.devicePixelRatio, dynPR),
+                )
                 dynCooldown = 4
               }
             }
@@ -810,7 +1088,12 @@ export default function App() {
           // stuck, not mid-recovery.
           const bq0 = body.rotation()
           const upY0 = 1 - 2 * (bq0.x * bq0.x + bq0.z * bq0.z)
-          if (startedRef.current && !pausedRef.current && body.translation().y < 0.1 && upY0 < 0.3) {
+          if (
+            startedRef.current &&
+            !pausedRef.current &&
+            body.translation().y < 0.1 &&
+            upY0 < 0.3
+          ) {
             buriedTimer += dt
           } else {
             buriedTimer = 0
@@ -820,7 +1103,10 @@ export default function App() {
             resetRef.current = false
             const p = body.translation()
             const s = -p.z
-            car.reset(new THREE.Vector3(roadCenterX(s), 0.72, p.z), roadDirYaw(s))
+            car.reset(
+              new THREE.Vector3(roadCenterX(s), 0.72, p.z),
+              roadDirYaw(s),
+            )
             stepper.acc = 0
           }
 
@@ -837,8 +1123,7 @@ export default function App() {
             if (raceActive && headsUp > 0) headsUp = Math.max(0, headsUp - dt)
             else if (raceActive && countdown > 0)
               countdown = Math.max(0, countdown - dt)
-            const racing =
-              !raceActive || (headsUp <= 0 && countdown <= 0)
+            const racing = !raceActive || (headsUp <= 0 && countdown <= 0)
             if (raceActive && racing && !raceFinished) raceElapsed += dt
             const steps = pushFrameTime(stepper, dt)
             // Phase 1 diagnostics: physics tick rate + dropped sim time.
@@ -935,8 +1220,7 @@ export default function App() {
               consumeSubstep(stepper)
             }
             if (stepper.droppedTotal > 0) {
-              ;(window as any).__physicsDroppedTotal =
-                stepper.droppedTotal
+              ;(window as any).__physicsDroppedTotal = stepper.droppedTotal
             }
           }
 
@@ -962,7 +1246,8 @@ export default function App() {
               body as any,
             )
             const inside =
-              !!bhit && (bhit as unknown as { timeOfImpact: number }).timeOfImpact < 0.05
+              !!bhit &&
+              (bhit as unknown as { timeOfImpact: number }).timeOfImpact < 0.05
             if (inside) {
               buriedFrames++
             } else {
@@ -1113,7 +1398,12 @@ export default function App() {
               }
             }
             raceUiAcc += dt
-            if (raceUiAcc > 0.05 || raceFinished || headsUp > 0 || countdown > 0) {
+            if (
+              raceUiAcc > 0.05 ||
+              raceFinished ||
+              headsUp > 0 ||
+              countdown > 0
+            ) {
               raceUiAcc = 0
               const netStandings: RaceStanding[] = Array.from(
                 net?.remoteCars.values() ?? [],
@@ -1130,7 +1420,9 @@ export default function App() {
                 {
                   id: "you",
                   name: net?.roomId ? net.localName : "You",
-                  color: colorHex(net?.roomId ? net.localColor : 0xe8e8e8),
+                  color: colorHex(
+                    net?.roomId ? net.localColor : DEFAULT_PLAYER_COLOR,
+                  ),
                   isPlayer: true,
                   progressM: playerProgress,
                   finished: playerFinished,
@@ -1200,106 +1492,140 @@ export default function App() {
           smoke.update(dt)
 
           const nowS = now / 1000
-          {
-            const MAXD = 120
-            const mx = Math.max(-MAXD, Math.min(MAXD, e0.lastMovementX))
-            const my = Math.max(-MAXD, Math.min(MAXD, e0.lastMovementY))
-            if (mx !== 0 || my !== 0) {
-              camYaw -= mx * 0.0022
-              camPitch = Math.max(-0.15, Math.min(0.5, camPitch + my * 0.0022))
-              lastOrbit = nowS
-            }
-          }
-          e0.lastMovementX = 0
-          e0.lastMovementY = 0
-          // Auto-recenter only once the car is rolling — when parked, a
-          // moved camera stays where the driver left it.
-          const rolling = Math.abs(car.forwardSpeed) > 1.0
-          if (!orbiting && rolling && nowS - lastOrbit > 2.5) {
-            const ck = 1 - Math.exp(-dt * 2.2)
-            camYaw +=
-              (Math.round(camYaw / (Math.PI * 2)) * Math.PI * 2 - camYaw) * ck
-            if (Math.abs(camYaw) < 0.002) camYaw = 0
-            camPitch += (0 - camPitch) * ck
-            if (Math.abs(camPitch) < 0.002) camPitch = 0
-          }
           const bq = body.rotation()
           const quat = new THREE.Quaternion(bq.x, bq.y, bq.z, bq.w)
           const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(quat)
           smoothFwd.lerp(fwd, 1 - Math.exp(-dt * 10)).normalize()
-          const orbitQ = new THREE.Quaternion().setFromAxisAngle(
-            new THREE.Vector3(0, 1, 0),
-            camYaw,
-          )
-          const viewDir = smoothFwd.clone().applyQuaternion(orbitQ)
-          viewDir.y = 0
-          viewDir.normalize()
-          const dist = chaseFar ? 6.4 : 5.2
-          const height = (chaseFar ? 1.08 : 0.92) + camPitch * 5
-          const desired = carPos
-            .clone()
-            .addScaledVector(viewDir, -dist)
-            .add(new THREE.Vector3(0, height, 0))
-          if (raceActive && headsUp > 0) {
-            // Pre-start wide shot: park the camera ahead-side of the player
-            // looking back down the grid so the whole field is visible.
-            desired
-              .copy(carPos)
-              .addScaledVector(smoothFwd, 13)
-              .add(new THREE.Vector3(7.5, 4.2, 0))
-            camLook
-              .copy(carPos)
-              .addScaledVector(smoothFwd, -9)
-              .add(new THREE.Vector3(0, 1.2, 0))
-            camera.position.copy(desired)
+          if (!startedRef.current) {
+            // GARAGE SHOWROOM (menu open): slow orbit around the parked
+            // car over the live world. The car never sims here —
+            // car.update is gated on started — so this is presentation
+            // only. Regular chase-cam state (camYaw/camPos) is left
+            // alone so driving resumes seamlessly on start.
+            e0.lastMovementX = 0
+            e0.lastMovementY = 0
+            const orbitA = nowS * 0.28
+            const sr = 7.4
+            showDesired.set(
+              carPos.x + Math.sin(orbitA) * sr,
+              carPos.y + 2.1,
+              carPos.z + Math.cos(orbitA) * sr,
+            )
+            camPos.lerp(showDesired, 1 - Math.exp(-dt * 2.5))
+            camera.position.copy(camPos)
+            camLook.copy(carPos)
+            camLook.y += 0.55 + playerDef.physics.dimensions.height * 0.12
             camera.lookAt(camLook)
+            if (Math.abs(camera.fov - 58) > 0.05) {
+              camera.fov += (58 - camera.fov) * Math.min(1, dt * 2)
+              camera.updateProjectionMatrix()
+            }
+            setSpeedLines(0)
           } else {
-            camPos.copy(desired)
+            {
+              const MAXD = 120
+              const mx = Math.max(-MAXD, Math.min(MAXD, e0.lastMovementX))
+              const my = Math.max(-MAXD, Math.min(MAXD, e0.lastMovementY))
+              if (mx !== 0 || my !== 0) {
+                camYaw -= mx * 0.0022
+                camPitch = Math.max(-0.5, Math.min(0.5, camPitch + my * 0.0022))
+                lastOrbit = nowS
+              }
+            }
+            e0.lastMovementX = 0
+            e0.lastMovementY = 0
+            // Auto-recenter only once the car is rolling — when parked, a
+            // moved camera stays where the driver left it.
+            const rolling = Math.abs(car.forwardSpeed) > 1.0
+            if (!orbiting && rolling && nowS - lastOrbit > 2.5) {
+              const ck = 1 - Math.exp(-dt * 2.2)
+              camYaw +=
+                (Math.round(camYaw / (Math.PI * 2)) * Math.PI * 2 - camYaw) * ck
+              if (Math.abs(camYaw) < 0.002) camYaw = 0
+              camPitch += (0 - camPitch) * ck
+              if (Math.abs(camPitch) < 0.002) camPitch = 0
+            }
+            const orbitQ = new THREE.Quaternion().setFromAxisAngle(
+              new THREE.Vector3(0, 1, 0),
+              camYaw,
+            )
+            const viewDir = smoothFwd.clone().applyQuaternion(orbitQ)
+            viewDir.y = 0
+            viewDir.normalize()
+            const dist = chaseFar ? 6.4 : 5.2
+            const height =
+              (chaseFar ? 1.08 : 0.92) + camPitch * 5 + camHeightBoost
+            const desired = carPos
+              .clone()
+              .addScaledVector(viewDir, -dist)
+              .add(new THREE.Vector3(0, height, 0))
+            // Deep downward orbits would drive the camera under the road:
+            // floor it just below the car and above the ground plane. The
+            // look target is still the car centre, so it stays centered.
+            desired.y = Math.max(desired.y, carPos.y - 0.9, 0.3)
+            if (raceActive && headsUp > 0) {
+              // Pre-start wide shot: park the camera ahead-side of the player
+              // looking back down the grid so the whole field is visible.
+              desired
+                .copy(carPos)
+                .addScaledVector(smoothFwd, 13)
+                .add(new THREE.Vector3(7.5, 4.2, 0))
+              camLook
+                .copy(carPos)
+                .addScaledVector(smoothFwd, -9)
+                .add(new THREE.Vector3(0, 1.2, 0))
+              camera.position.copy(desired)
+              camera.lookAt(camLook)
+            } else {
+              camPos.copy(desired)
 
-          const SF = CAR_PHYSICS.assists.speedFeel
-          const vAbs = Math.abs(car.forwardSpeed) * 3.6
-          const sfFov = Math.min(1, vAbs / SF.fovAtMaxSpeedKmh)
-          const offAxis = clamp(Math.abs(camYaw) / (Math.PI / 2), 0, 1)
-          const fovCeil =
-            SF.fovBase + (SF.fovMax - SF.fovBase) * (1 - offAxis * 0.55)
-          const targetFov = SF.fovBase + (fovCeil - SF.fovBase) * sfFov * sfFov
-          if (Math.abs(camera.fov - targetFov) > 0.02) {
-            camera.fov += (targetFov - camera.fov) * Math.min(1, dt * 3.5)
-            camera.updateProjectionMatrix()
-          }
-          setSpeedLines(
-            Math.min(
-              1,
-              Math.max(
-                0,
-                (vAbs - SF.linesFromKmh) /
-                  (SF.fovAtMaxSpeedKmh - SF.linesFromKmh),
-              ),
-            ),
-          )
+              const SF = CAR_PHYSICS.assists.speedFeel
+              const vAbs = Math.abs(car.forwardSpeed) * 3.6
+              const sfFov = Math.min(1, vAbs / SF.fovAtMaxSpeedKmh)
+              const offAxis = clamp(Math.abs(camYaw) / (Math.PI / 2), 0, 1)
+              const fovCeil =
+                SF.fovBase + (SF.fovMax - SF.fovBase) * (1 - offAxis * 0.55)
+              const targetFov = SF.fovBase + (fovCeil - SF.fovBase) * sfFov
+              if (Math.abs(camera.fov - targetFov) > 0.02) {
+                camera.fov += (targetFov - camera.fov) * Math.min(1, dt * 3.5)
+                camera.updateProjectionMatrix()
+              }
+              setSpeedLines(
+                Math.min(
+                  1,
+                  Math.max(
+                    0,
+                    (vAbs - SF.linesFromKmh) /
+                      (SF.fovAtMaxSpeedKmh - SF.linesFromKmh),
+                  ),
+                ),
+              )
 
-          const tgtLookAhead = 6 * Math.max(0, Math.cos(camYaw))
-          lookAheadSm += (tgtLookAhead - lookAheadSm) * (1 - Math.exp(-dt * 8))
-          camLook.copy(carPos).addScaledVector(smoothFwd, lookAheadSm)
-          camLook.y += 0.92 + Math.max(0, camPitch) * 1.8
-          camera.position.copy(camPos)
-          camera.lookAt(camLook)
+              // Center-anchored on both axes: the look target IS the car's
+              // centre (physics origin ~= visual bbox centre). lookAt pins
+              // that point to the exact screen centre, so any Y trim here
+              // would push the car off-centre vertically — orbit pitch only
+              // moves the camera height (see `desired` above), never this.
+              camLook.copy(carPos)
+              camera.position.copy(camPos)
+              camera.lookAt(camLook)
 
-          const sfShake = Math.min(
-            1,
-            Math.max(
-              0,
-              (vAbs - SF.shakeFromKmh) /
-                (SF.fovAtMaxSpeedKmh - SF.shakeFromKmh),
-            ),
-          )
-          if (sfShake > 0.001) {
-            const t2 = nowS * 34
-            camera.rotation.z += Math.sin(t2 * 1.7) * SF.shakeAmp * sfShake
-            camera.position.x += Math.sin(t2 * 2.3) * 0.014 * sfShake
-            camera.position.y += Math.sin(t2 * 3.1) * 0.012 * sfShake
-          }
-          }
+              const sfShake = Math.min(
+                1,
+                Math.max(
+                  0,
+                  (vAbs - SF.shakeFromKmh) /
+                    (SF.fovAtMaxSpeedKmh - SF.shakeFromKmh),
+                ),
+              )
+              if (sfShake > 0.001) {
+                const t2 = nowS * 34
+                camera.rotation.z += Math.sin(t2 * 1.7) * SF.shakeAmp * sfShake
+                camera.position.x += Math.sin(t2 * 2.3) * 0.014 * sfShake
+                camera.position.y += Math.sin(t2 * 3.1) * 0.012 * sfShake
+              }
+            } // end heads-up else
+          } // end chase cam (else of showroom branch)
 
           renderer!.render(scene, camera)
 
@@ -1309,8 +1635,8 @@ export default function App() {
           }
         }
         raf = requestAnimationFrame(loop)
-
         ;(mount as any)._cleanup = () => {
+          garageApiRef.current = null
           window.removeEventListener("resize", onResize)
           window.removeEventListener("blur", onWinBlur)
           dom.removeEventListener("pointerdown", onPointerDown)
@@ -1383,18 +1709,25 @@ export default function App() {
       {}
       <SpeedLines ref={speedLinesRef} />
       {showNetDiag && <NetDiagPanel />}
-      {!loading && !error && started && !race.finished && <Dashboard tele={tele} />}
+      {!loading && !error && started && !race.finished && (
+        <Dashboard tele={tele} />
+      )}
       {!loading && !error && started && !paused && !race.finished && (
         <RaceHud race={race} />
       )}
       {!loading && !error && started && !paused && !race.finished && (
         <RaceLiveBoard race={race} />
       )}
-      {!loading && !error && started && !paused && !race.finished && lockHint && (
-        <div className="absolute bottom-32 left-1/2 -translate-x-1/2 rounded-full border border-white/15 bg-black/70 px-5 py-2 text-[12px] tracking-wide text-gray-200 backdrop-blur">
-          Click anywhere to get the mouse back
-        </div>
-      )}
+      {!loading &&
+        !error &&
+        started &&
+        !paused &&
+        !race.finished &&
+        lockHint && (
+          <div className="absolute bottom-32 left-1/2 -translate-x-1/2 rounded-full border border-white/15 bg-black/70 px-5 py-2 text-[12px] tracking-wide text-gray-200 backdrop-blur">
+            Click anywhere to get the mouse back
+          </div>
+        )}
       {netConnected && started && !race.finished && (
         <MultiplayerHudBadge
           roomId={netRoomId}
@@ -1409,6 +1742,14 @@ export default function App() {
           distanceKm={distanceKm}
           onRivals={setRivals}
           onDistance={setDistanceKm}
+          cars={CARS}
+          carId={carId}
+          onPrevCar={() => stepCar(-1)}
+          onNextCar={() => stepCar(1)}
+          paint={paintFor(carId) ?? null}
+          onPaint={(color) => setPaintFor(carId, color)}
+          pool={pool}
+          onTogglePool={togglePool}
           onFreeDrive={startGame}
           onStartRace={startRace}
           onOpenMultiplayer={() => setShowMultiplayerLobby(true)}
@@ -1441,7 +1782,12 @@ export default function App() {
             // join() reports false when the connection can't even start —
             // don't strand the UI on the form with no explanation.
             const ok =
-              multiplayerRef.current?.join(target, mode, driverName, driverColor) ?? false
+              multiplayerRef.current?.join(
+                target,
+                mode,
+                driverName,
+                driverColor,
+              ) ?? false
             setNetConnected(ok)
           }}
           onLeaveRoom={handleLeaveRoom}
@@ -1455,11 +1801,7 @@ export default function App() {
         />
       )}
       {!loading && !error && started && race.finished && (
-        <RaceResults
-          race={race}
-          onAgain={raceAgain}
-          onMenu={quitToMenu}
-        />
+        <RaceResults race={race} onAgain={raceAgain} onMenu={quitToMenu} />
       )}
       {!loading && !error && started && paused && !race.finished && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/55 backdrop-blur-[3px]">
@@ -1513,9 +1855,11 @@ export default function App() {
         <div className="absolute inset-0 flex items-center justify-center bg-[#0b0e14] text-white">
           <div className="text-center">
             <div className="text-[11px] font-semibold tracking-[0.4em] text-[#8f99a8]">
-              M PERFORMANCE
+              PADDOCK
             </div>
-            <div className="mt-2 text-2xl font-bold">Getting your M3 ready</div>
+            <div className="mt-2 text-2xl font-bold">
+              Getting your {getCar(carId).name} ready
+            </div>
             <div className="mt-1 text-sm text-gray-400">
               Warming up physics and loading the world
             </div>

@@ -64,6 +64,8 @@ export interface PeerPlayer {
   name: string
   color: number
   colorHex: string
+  /** Car registry id from the peer's HELLO (undefined = legacy/M3). */
+  carId?: string
   pingMs: number
   ready: boolean
   isHost: boolean

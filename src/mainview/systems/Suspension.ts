@@ -10,6 +10,26 @@ export interface WheelDef {
   left: boolean
 }
 
+export interface SuspensionParams {
+  springRate: number
+  damperRate: number
+  /** Bump travel before the hard clamp (droop/compression headroom
+   *  added internally). */
+  travel: number
+  antiRollBarFront: number
+  antiRollBarRear: number
+}
+
+function defaultSuspensionParams(): SuspensionParams {
+  const s = CAR_PHYSICS.wheels.suspension
+  return {
+    springRate: s.springRate,
+    damperRate: s.damperRate,
+    travel: s.travel,
+    antiRollBarFront: s.antiRollBarFront,
+    antiRollBarRear: s.antiRollBarRear,
+  }
+}
 export interface WheelSuspState {
   wi: number
   grounded: boolean
@@ -48,17 +68,20 @@ export class SuspensionSystem {
   private body: RAPIER.RigidBody
   private R: typeof RAPIER
   private wheels: WheelDef[]
+  private params: SuspensionParams
 
   constructor(
     world: RAPIER.World,
     body: RAPIER.RigidBody,
     R: typeof RAPIER,
     wheels: WheelDef[],
+    params?: SuspensionParams,
   ) {
     this.world = world
     this.body = body
     this.R = R
     this.wheels = wheels
+    this.params = params ?? defaultSuspensionParams()
     wheels.forEach((_, wi) => {
       this.states.push({
         wi,
@@ -85,10 +108,9 @@ export class SuspensionSystem {
     linvel: THREE.Vector3,
     angvel: THREE.Vector3,
   ): WheelSuspState[] {
-    const P = CAR_PHYSICS
-    const k = P.wheels.suspension.springRate
-    const c = P.wheels.suspension.damperRate
-    const travelLimit = P.wheels.suspension.travel + 0.06
+    const k = this.params.springRate
+    const c = this.params.damperRate
+    const travelLimit = this.params.travel + 0.06
     const up = new THREE.Vector3(0, 1, 0).applyQuaternion(quat)
 
     for (let wi = 0; wi < this.wheels.length; wi++) {
@@ -170,8 +192,8 @@ export class SuspensionSystem {
       const right = this.states[ri]
       if (!left.grounded || !right.grounded) continue
       const kArb = front
-        ? P.wheels.suspension.antiRollBarFront
-        : P.wheels.suspension.antiRollBarRear
+        ? this.params.antiRollBarFront
+        : this.params.antiRollBarRear
       const arb = clamp(
         (kArb * (left.compression - right.compression)) / 2,
         -ARB_FORCE_LIMIT,
