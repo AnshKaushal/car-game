@@ -12,7 +12,7 @@ const S = 200
 const R_RIM = 190
 const R_PROG = 185
 const R_BAND = 180
-const R_TICK = 180
+const R_TICK = 185
 const R_LABEL = 150
 const R_HUB = 135
 const START = 6
@@ -231,8 +231,8 @@ function Dial({
       .map(([u, d]) => `${nx(u)},${S + d}`)
       .join(" ")
 
-  const body = bar(N_BASE, 3.4, N_SPLIT + 6, 2.2)
-  const tip = bar(N_SPLIT, 2.2, N_END, 1.0)
+  const body = bar(N_BASE, 3.5, N_SPLIT + 16, 1.5)
+  const tip = bar(N_SPLIT, 2.0, N_END + 1, 1.0)
 
   const iconPos = { x: X(34) - 12, y: Y(86) - 12 }
 

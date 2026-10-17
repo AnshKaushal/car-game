@@ -357,7 +357,231 @@ const urus: CarDefinition = {
   tested: { zeroToHundredS: 3.9, topSpeedKmh: 316 },
 }
 
-export const CARS: CarDefinition[] = [m3, r8, gwagon, urus]
+const aventador: CarDefinition = {
+  id: "lambo-aventador",
+  name: "Lamborghini Aventador LP 700-4",
+  shortName: "Aventador",
+  modelFile: "models/lamborghini_aventador.glb",
+  physics: createPhysicsConfig({
+    mass: { chassis: 1500, frontWheel: 22, rearWheel: 25, total: 1650 },
+    dimensions: {
+      width: 2.03,
+      height: 1.136,
+      length: 4.78,
+      wheelbase: 2.7,
+      trackWidth: 1.72,
+      groundClearance: 0.11,
+      centerOfMassHeight: 0.38,
+    },
+    engine: {
+      ...CAR_PHYSICS.engine,
+      maxPowerHP: 700,
+      maxTorqueNm: 690,
+      maxPowerRPM: 8250,
+      maxTorqueRPM: 5500,
+      redlineRPM: 8500,
+      revLimiterRPM: 8500,
+      idleRPM: 950,
+      // V12 naturally aspirated — broad torque, rises steadily to peak at 5500 rpm,
+      // stays high through the rev range then falls into the limiter
+      torqueCurve: [
+        [0, 0.28],
+        [1000, 0.42],
+        [2000, 0.62],
+        [3000, 0.78],
+        [4000, 0.9],
+        [5500, 1.0],
+        [6500, 0.97],
+        [7500, 0.93],
+        [8250, 0.87],
+        [8500, 0.65],
+        [8700, 0.0],
+      ],
+    },
+    transmission: {
+      ...CAR_PHYSICS.transmission,
+      // ISR 7-speed (Car and Driver / Motormatchup confirmed)
+      gearRatios: [3.91, 2.44, 1.81, 1.46, 1.19, 0.97, 0.89],
+      finalDriveRatio: 2.86,
+      reverseRatio: 2.93,
+      launchControlRPM: 5500,
+      autoUpshiftRPM: 8300,
+      torqueConverter: {
+        ...CAR_PHYSICS.transmission.torqueConverter,
+        creepForce: 1200,
+      },
+    },
+    drivetrain: {
+      type: "awd",
+      // Haldex gen IV — nominally rear-biased (43/57 weight distribution)
+      frontTorqueSplit: 0.3,
+      torqueCapGear1: 2200,
+      torqueCapGear2: 3500,
+    },
+    wheels: {
+      ...CAR_PHYSICS.wheels,
+      // From model: front tyres 0.67 m dia, rear 0.73 m dia → average radius 0.35 m
+      radius: 0.35,
+      frictionMu: 1.55,
+      referenceLoad: 3850, // 1650 kg * 9.81 / 4
+      suspension: {
+        ...CAR_PHYSICS.wheels.suspension,
+        // Push-rod horizontal damper setup — stiff, low CoM sports car
+        springRate: 62000,
+        damperRate: 4200,
+        travel: 0.09,
+        antiRollBarFront: 18000,
+        antiRollBarRear: 16000,
+      },
+      brakeForce: { front: 1900, rear: 1500 },
+      // CCB: Ø400×38 mm front, Ø380×38 mm rear — strong stopping
+      steering: {
+        ...CAR_PHYSICS.wheels.steering,
+        maxAngle: 0.52,
+        speedFalloffKmh: 220,
+      },
+    },
+    aero: {
+      ...CAR_PHYSICS.aero,
+      // Cd ~0.33 from research; frontal area ≈ width × height × 0.85 ≈ 1.95 m²
+      dragCoefficient: 0.33,
+      frontalArea: 1.95,
+      // Deployable rear spoiler — significant downforce at speed
+      downforceAt100kmh: 320,
+    },
+    assists: {
+      ...CAR_PHYSICS.assists,
+      tractionControl: 0.3,
+    },
+  }),
+  wheels: [
+    { x: -0.86, z: -1.25, front: true, left: true },
+    { x: 0.86, z: -1.25, front: true, left: false },
+    { x: -0.85, z: 1.45, front: false, left: true },
+    { x: 0.85, z: 1.45, front: false, left: false },
+  ],
+  pivots: { pattern: "^Wheel(FL|FR|BL|BR)$" },
+  dash: { maxRpm: 9000, redFromRpm: 8000, maxKmh: 380 },
+  defaultTint: null,
+  // Explicit match: only carpaint meshes and scissor doors/bumpers carry the body colour.
+  // Black plastic, chrome, detail and glass mesh names would otherwise false-positive
+  // through the heuristic (chassis/bumper keywords hit PAINT_NAMES).
+  paintMatch: ["carpaint", "detach_door", "detach_bumper"],
+  tested: { zeroToHundredS: 2.9, topSpeedKmh: 350 },
+}
+
+const challenger: CarDefinition = {
+  id: "dodge-challenger",
+  name: "Dodge Challenger SRT8",
+  shortName: "Challenger",
+  modelFile: "models/dodge_challenger.glb",
+  physics: createPhysicsConfig({
+    mass: { chassis: 1790, frontWheel: 28, rearWheel: 28, total: 1878 },
+    dimensions: {
+      width: 1.923,
+      height: 1.448,
+      length: 5.023,
+      wheelbase: 2.946,
+      trackWidth: 1.603,
+      groundClearance: 0.14,
+      centerOfMassHeight: 0.52,
+    },
+    engine: {
+      ...CAR_PHYSICS.engine,
+      maxPowerHP: 425,
+      maxTorqueNm: 569, // 420 lb-ft
+      maxPowerRPM: 6200,
+      maxTorqueRPM: 4800,
+      redlineRPM: 6400,
+      revLimiterRPM: 6400,
+      idleRPM: 700,
+      // 6.1L HEMI pushrod V8 — strong low-end, broad flat torque band, falls off near redline
+      torqueCurve: [
+        [0, 0.38],
+        [800, 0.55],
+        [1500, 0.75],
+        [2500, 0.88],
+        [3500, 0.96],
+        [4800, 1.0],
+        [5500, 0.97],
+        [6000, 0.92],
+        [6200, 0.86],
+        [6400, 0.6],
+        [6600, 0.0],
+      ],
+    },
+    transmission: {
+      ...CAR_PHYSICS.transmission,
+      // W5A580 5-speed automatic (official Stellantis spec sheet)
+      gearRatios: [3.59, 2.19, 1.41, 1.0, 0.83],
+      finalDriveRatio: 3.06,
+      reverseRatio: 3.16,
+      launchControlRPM: 3000,
+      autoUpshiftRPM: 6200,
+      torqueConverter: {
+        ...CAR_PHYSICS.transmission.torqueConverter,
+        creepForce: 1600,
+      },
+    },
+    drivetrain: {
+      type: "rwd",
+      frontTorqueSplit: 0,
+      torqueCapGear1: 2800,
+      torqueCapGear2: 4200,
+    },
+    wheels: {
+      ...CAR_PHYSICS.wheels,
+      // From model: wheel pivot y=0.452 m above ground → radius 0.452 m
+      radius: 0.452,
+      frictionMu: 1.3,
+      referenceLoad: 4400, // 1878 kg * 9.81 / 4
+      suspension: {
+        ...CAR_PHYSICS.wheels.suspension,
+        // SLA front coilovers, 5-link independent rear — muscle car tuning, stiffer than stock
+        springRate: 52000,
+        damperRate: 3800,
+        travel: 0.13,
+        antiRollBarFront: 14000,
+        antiRollBarRear: 16000, // larger rear sway bar per SRT spec
+      },
+      brakeForce: { front: 2100, rear: 1600 },
+      // Brembo 4-piston: 360×32 mm front, 350×26 mm rear
+      handbrakeForce: 3500,
+      steering: {
+        ...CAR_PHYSICS.wheels.steering,
+        maxAngle: 0.6,
+        speedFalloffKmh: 160,
+      },
+    },
+    aero: {
+      ...CAR_PHYSICS.aero,
+      // Official Cd 0.353, frontal area 2.35 m² (from Stellantis press release)
+      dragCoefficient: 0.353,
+      frontalArea: 2.35,
+      downforceAt100kmh: 40, // muscle car — minimal aero downforce
+    },
+    assists: {
+      ...CAR_PHYSICS.assists,
+      tractionControl: 0.5,
+      countersteerAssist: 4500,
+    },
+  }),
+  wheels: [
+    { x: -0.907, z: -1.325, front: true, left: true },
+    { x: 0.915, z: -1.325, front: true, left: false },
+    { x: -1.008, z: 2.355, front: false, left: true },
+    { x: 1.017, z: 2.355, front: false, left: false },
+  ],
+  pivots: { pattern: "^Wheel_[1-4]$" },
+  dash: { maxRpm: 7000, redFromRpm: 6000, maxKmh: 280 },
+  defaultTint: null,
+  // Body colour is on material named "material" (Body_Red_0, Side_Mirror_*_Red_0)
+  // Body_Black/Gray/White meshes use named materials that should not be tinted
+  paintMatch: ["^material$"],
+  tested: { zeroToHundredS: 5.0, topSpeedKmh: 274 },
+}
+
+export const CARS: CarDefinition[] = [m3, r8, gwagon, urus, aventador, challenger]
 
 export const DEFAULT_CAR_ID = "bmw-m3"
 
