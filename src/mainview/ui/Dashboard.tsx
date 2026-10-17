@@ -11,7 +11,7 @@ type Kind = "speed" | "rpm"
 const S = 200
 const R_RIM = 190
 const R_PROG = 185
-const R_BAND = 180
+const R_BAND = 185
 const R_TICK = 185
 const R_LABEL = 150
 const R_HUB = 135
@@ -234,7 +234,7 @@ function Dial({
   const body = bar(N_BASE, 3.5, N_SPLIT + 16, 1.5)
   const tip = bar(N_SPLIT, 2.0, N_END + 1, 1.0)
 
-  const iconPos = { x: X(34) - 12, y: Y(86) - 12 }
+  const iconPos = { x: X(52) - 12, y: Y(86) - 12 }
 
   return (
     <svg viewBox={`0 0 ${S} ${S}`} className="block h-auto w-full">
@@ -279,34 +279,16 @@ function Dial({
 
       {}
       <path
-        d={sector(side, R_RIM + 3)}
-        fill={`url(#${id}-face)`}
-        opacity="0.95"
-      />
-      <path
         ref={refs.rim}
         d={arc(side, R_RIM, 0, 90)}
         fill="none"
         stroke={`url(#${id}-chrome)`}
         strokeWidth="6"
-      />
-      <path
-        d={arc(side, R_RIM - 4.5, 0, 90)}
-        fill="none"
-        stroke="#04060a"
-        strokeWidth="1.5"
-        opacity="0.9"
-      />
-      <path
-        d={arc(side, 176, START - 4, END + 4)}
-        fill="none"
-        stroke="rgba(255,255,255,0.07)"
-        strokeWidth="1"
+        z={999}
       />
 
       {}
       {scale}
-
       {}
       <path
         ref={refs.progress}
@@ -499,7 +481,7 @@ export default function Dashboard({ tele }: { tele: CarTelemetry }) {
         )
         rim.setAttribute(
           "stroke-width",
-          limiter ? String(6 + flash * 2) : warning ? "7" : "6",
+          limiter ? String(6 + flash * 2) : warning ? "6" : "6",
         )
         rim.style.filter = limiter
           ? flash > 0.5
