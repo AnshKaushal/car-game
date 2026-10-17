@@ -4,9 +4,21 @@ const PAINT_NAMES = /body|paint|chassis|hood|door|bumper|fender|bonnet|shell/i
 const SKIP_NAMES =
   /glass|window|light|lamp|wheel|tire|tyre|rim|brake|caliper|interior|chrome|mirror/i
 
+/** Lamps glow, paint doesn't. Every lamp material in the shipped GLBs
+ *  carries an emissive color (M3 headlights are #ffffff, tail lights
+ *  #ff0000); no body panel has one. Without this the gray-lightness
+ *  heuristic below happily repaints the M3's white headlight strip in the
+ *  body color — a black car ends up with black lights. */
+function isLampMaterial(mat: THREE.Material): boolean {
+  const emissive = (mat as THREE.MeshStandardMaterial).emissive
+  if (!emissive) return false
+  return emissive.r + emissive.g + emissive.b > 0.02
+}
+
 function isPaintMaterial(mat: THREE.Material, meshName: string): boolean {
   const name = `${mat.name} ${meshName}`
   if (SKIP_NAMES.test(name)) return false
+  if (isLampMaterial(mat)) return false
   if (PAINT_NAMES.test(name)) return true
   const std = mat as THREE.MeshStandardMaterial
   if (!std.color) return false

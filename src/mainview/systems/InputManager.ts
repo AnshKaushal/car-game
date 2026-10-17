@@ -130,7 +130,7 @@ export class InputManager {
       downshiftPressed: edge("KeyQ"),
       toggleModePressed: edge("KeyM"),
       toggleLaunchPressed: edge("KeyL"),
-      toggleParkPressed: edge("KeyO"),
+      toggleParkPressed: edge("Space"),
       resetPressed: edge("KeyR"),
       toggleCameraPressed: edge("KeyC"),
       startPressed: edge("Enter"),

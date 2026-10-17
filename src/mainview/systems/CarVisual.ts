@@ -5,6 +5,11 @@ import type * as RAPIER from "@dimforge/rapier3d-compat"
 import { CAR_PHYSICS } from "../constants/physics"
 import type { WheelDef } from "./Suspension"
 import { tintCar, whitenRims, type PaintTextureRule } from "./carTint"
+import {
+  applyBrakeHeat,
+  collectBrakeLights,
+  type BrakeLight,
+} from "./carLights"
 
 export const CAR_MODEL_YAW = Math.PI
 
@@ -123,6 +128,10 @@ export class CarVisual {
   private lastTint: number | undefined = undefined
   /** Merged static meshes (body + per-wheel) shown in hi detail. */
   private hiMerged: THREE.Object3D[] = []
+  /** Per-instance red lamp clones (empty for textured single-material cars). */
+  private brakeLights: BrakeLight[] = []
+  /** Smoothed 0..1 glow — 0 is running lights, 1 is full brake. */
+  private brakeLevel = 0
 
   async load(
     baseUrl: string,
@@ -143,6 +152,7 @@ export class CarVisual {
           })
         : []
     whitenRims(model)
+    this.brakeLights = collectBrakeLights(model)
     model.traverse((o: any) => {
       if (o.isMesh) {
         o.castShadow = this.castShadow
@@ -419,6 +429,22 @@ export class CarVisual {
       target.add(out)
       this.hiMerged.push(out)
     }
+  }
+
+  /**
+   * Brake-light glow from `level` (0..1: pedal pressure, or 1 for the park
+   * brake). Instant in both directions — these are LEDs, so there is no
+   * filament warm-up and no afterglow to trail off. Ramping the glow reads
+   * as a bulb fading up and down, which is exactly the wrong part.
+   * No-ops when the level is unchanged, which matters with 50 traffic cars
+   * sharing the frame.
+   */
+  setBrake(level: number) {
+    if (this.brakeLights.length === 0) return
+    const want = Math.max(0, Math.min(1, level))
+    if (want === this.brakeLevel) return
+    this.brakeLevel = want
+    for (const l of this.brakeLights) applyBrakeHeat(l, want)
   }
 
   /** Runtime shadow toggle — far cars skip the depth pass entirely. */

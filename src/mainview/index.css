@@ -32,3 +32,92 @@
   width: 200px;
   height: 172px;
 }
+
+
+/* src/mainview/globals.css */
+
+.instrument-hud {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.instrument-corner {
+  position: absolute;
+  bottom: -10.5rem;
+  width: clamp(350px, 34vw, 560px);
+  aspect-ratio: 1;
+  pointer-events: none;
+}
+
+.instrument-corner--left {
+  left: -10.5rem;
+}
+
+.instrument-corner--right {
+  right: -10.5rem;
+}
+
+.instrument-face {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.cluster-drift-indicator {
+  color: #858b95;
+  opacity: 0.3;
+  transition: opacity 120ms ease, color 120ms ease;
+}
+
+/* Toggle this class from your existing drift state. */
+.cluster-drift-indicator.is-active {
+  color: #ffc928;
+  opacity: 1;
+  animation: cluster-drift-flash 650ms steps(2, end) infinite;
+}
+
+.cluster-park-indicator {
+  opacity: 0.35;
+}
+
+.cluster-park-indicator.is-active {
+  opacity: 1;
+  filter: drop-shadow(0 0 3px rgba(255, 255, 255, 0.45));
+}
+
+@keyframes cluster-drift-flash {
+  0%, 49% {
+    opacity: 1;
+    filter: drop-shadow(0 0 4px rgba(255, 201, 40, 0.8));
+  }
+  50%, 100% {
+    opacity: 0.3;
+    filter: none;
+  }
+}
+
+@media (max-width: 800px) {
+  .instrument-corner {
+    width: 340px;
+    bottom: -7.5rem;
+  }
+
+  .instrument-corner--left {
+    left: -8rem;
+  }
+
+  .instrument-corner--right {
+    right: -8rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cluster-drift-indicator.is-active {
+    animation: none;
+    opacity: 1;
+  }
+}

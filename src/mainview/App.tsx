@@ -714,6 +714,8 @@ export default function App() {
           stride: number
           /** One-shot edges in cached may be applied on the next tick only. */
           edgeArmed: boolean
+          /** Last AI pedal reading — drives the brake lights. */
+          brake: number
           /** Currently showing the full model (false = imposter). */
           hi: boolean
         }
@@ -813,6 +815,7 @@ export default function App() {
             cached: holdInput(),
             stride: 1,
             edgeArmed: false,
+            brake: 0,
             hi: true,
           })
         }
@@ -917,6 +920,7 @@ export default function App() {
             cached: holdInput(),
             stride: 1,
             edgeArmed: false,
+            brake: 0,
             hi: true,
           })
         }
@@ -1066,6 +1070,20 @@ export default function App() {
         let playerProgress = 0
         let raceUiAcc = 0
         let shadowAcc = 0
+        // Traffic recycling window. Both ends must sit outside the fog
+        // fade (100-800 m) or cars pop in and out where you can see it —
+        // behind you when you check the mirror, ahead when you crest a
+        // hill. Long enough that a mirror check still shows traffic.
+        const TRAFFIC_BEHIND = 700
+        const TRAFFIC_AHEAD = 1500
+        // Rival imposter band, metres. At 280 a car is roughly 6 px wide
+        // on a 1100 px viewport, so the blocky stand-in stops being
+        // readable as a stand-in — which is exactly the moment it used to
+        // look like the car had vanished as you checked the pack behind
+        // you. Down at 140 (the old band) that was ~12 px, and the swap
+        // was visible.
+        const DETAIL_FAR = 280
+        const DETAIL_NEAR = 220
         let trafficShadowAcc = 0
         let playerDoneT = 0
 
@@ -1471,7 +1489,8 @@ export default function App() {
                   } else {
                     aiInp = stripEdges(aiInp)
                   }
-                  rival.car.update(FIXED_DT, aiInp)
+                  const rt = rival.car.update(FIXED_DT, aiInp)
+                  rival.brake = Math.max(rt.brake, rt.parkingBrake ? 1 : 0)
                 }
               }
               for (let ti = 0; ti < trafficCars.length; ti++) {
@@ -1483,7 +1502,8 @@ export default function App() {
                 } else {
                   taiInp = stripEdges(taiInp)
                 }
-                tc.car.update(FIXED_DT, taiInp)
+                const tt = tc.car.update(FIXED_DT, taiInp)
+                tc.brake = Math.max(tt.brake, tt.parkingBrake ? 1 : 0)
               }
               // Shared-physics ghosts: velocity-drive remotes toward their
               // authoritative poses BEFORE stepping, so car-vs-car contacts
@@ -1545,6 +1565,8 @@ export default function App() {
             dt,
             car.getWheelCompressions(),
           )
+          // Brake lights: pedal, or the park brake holding the car still.
+          visual.setBrake(Math.max(t?.brake ?? 0, t?.parkingBrake ? 1 : 0))
           // Broadcast local state and update remote peer cars.
           // t is null while the lobby is open (not started) — remotes must
           // still animate, so update them even when there is nothing to send.
@@ -1607,6 +1629,7 @@ export default function App() {
                 dt,
                 rival.car.getWheelCompressions(),
               )
+              rival.visual.setBrake(rival.brake)
             }
             if (!raceFinished) {
               const netOrders = Array.from(net?.remoteCars.values() ?? []).map(
@@ -1653,10 +1676,12 @@ export default function App() {
             }
             // Distance-based shadow casters + model detail (2 Hz): you
             // plus the 3 nearest rivals render shadows. Imposter swaps
-            // use hysteresis (out past 140, back under 100) and upgrades
-            // are staggered — at most 2 cars go imposter→real per eval —
-            // so a pack crossing the band never flips N models in one
-            // frame. Downgrades apply immediately (they only shed cost).
+            // use hysteresis (out past DETAIL_FAR, back under
+            // DETAIL_NEAR) and upgrades are staggered — at most 2 cars go
+            // imposter→real per eval — so a pack crossing the band never
+            // flips N models in one frame. Downgrades apply immediately
+            // (they only shed cost). See DETAIL_FAR for why the band sits
+            // where it does.
             shadowAcc += dt
             if (shadowAcc > 0.5) {
               shadowAcc = 0
@@ -1673,10 +1698,10 @@ export default function App() {
               let upgrades = 0
               for (const { i, d } of ranked) {
                 const r = rivals[i]
-                if (r.hi && d > 140 * 140) {
+                if (r.hi && d > DETAIL_FAR * DETAIL_FAR) {
                   r.hi = false
                   r.visual.setDetail(false)
-                } else if (!r.hi && d < 100 * 100 && upgrades < 2) {
+                } else if (!r.hi && d < DETAIL_NEAR * DETAIL_NEAR && upgrades < 2) {
                   upgrades++
                   r.hi = true
                   r.visual.setDetail(true)
@@ -1763,28 +1788,32 @@ export default function App() {
               const trsp = tc.car.forwardSpeed
               if (Math.abs(trsp) < 1.0) tc.stuckT += dt
               else tc.stuckT = Math.max(0, tc.stuckT - dt * 3)
-              // BeamNG-style sight-based respawn: always out of
-              // sight. Same-way cars go 500-900 m ahead, past the fog
-              // fade; oncoming cars return 250-700 m up the road
-              // (fog-hidden on arrival, they close fast). Keeps the
-              // pool at exactly the chosen count, forever.
+              // Recycling distances are set by where the fog actually
+              // hides things, not by taste: a car yanked at 250 m behind
+              // vanished in plain view every time you checked the
+              // mirror, which read as a bug rather than as recycling.
+              // Fog runs 100-800 m, so the behind cut sits past the fade
+              // (TRAFFIC_BEHIND) and respawns land beyond fogFar too.
               if (
                 tp.y < -3 ||
                 tc.stuckT > 12 ||
-                tS < playerS - 250 ||
-                tS > playerS + 1400
+                tS < playerS - TRAFFIC_BEHIND ||
+                tS > playerS + TRAFFIC_AHEAD
               ) {
                 tc.stuckT = 0
                 // Sample a teleport spot keeping 35 m clear of every
                 // other car in the same half — respawning must never
                 // drop a bumper onto somebody else's roof.
-                let aheadS = playerS + 400
+                let aheadS = playerS + 900
                 const myHalf = tdir
                 for (let a2 = 0; a2 < 8; a2++) {
+                  // Both lanes land past fogFar (800 m): same-way cars
+                  // 900-1300 m up the road, oncoming 500-900 (they close
+                  // fast, so they still show up in seconds).
                   const cand =
                     tdir === 1
-                      ? playerS + 500 + Math.random() * 400
-                      : playerS + 250 + Math.random() * 450
+                      ? playerS + 900 + Math.random() * 400
+                      : playerS + 500 + Math.random() * 400
                   aheadS = cand
                   const clear = trafficCars.every((o) => {
                     if (o === tc) return true
@@ -1832,6 +1861,7 @@ export default function App() {
                 dt,
                 tc.car.getWheelCompressions(),
               )
+              tc.visual.setBrake(tc.brake)
             }
             // Near-traffic shadows at 2 Hz, same as race AI.
             trafficShadowAcc += dt
@@ -2375,7 +2405,7 @@ export default function App() {
 
             {/* Control reference as tower slices, matching the results
                 screen. The P keycap takes the blue: it's this menu. */}
-            <div className="no-scrollbar mt-auto border-t border-white/10">
+            <div className="no-scrollbar mt-auto border-t border-white/10 max-w-[300px]">
               {(
                 [
                   ["P", "Pause"],

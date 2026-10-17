@@ -41,6 +41,16 @@ import type { WheelDef } from "../systems/Suspension"
  *    0.87 vs 1.05 match real front/rear (spare wheel hangs off back).
  *  - Urus: wheel diameter 0.84 m + wheelbase 3.03 m read off the model
  *    match the real car; bumper-chunk pattern matches the BMW's.
+ *
+ * §Lamps — headlights never take paint, tail lights glow under braking.
+ *  Nothing about this needs editing here: carTint skips emissive materials
+ *  when it hunts for paint (the M3's white headlight strip used to be
+ *  repainted, giving black cars black lights), and carLights finds each
+ *  car's red lamps by their glowing color. Run
+ *  `bun scripts/light-info.ts <car-id>` on a new GLB to check what it sees;
+ *  `bun scripts/light-materials-test.ts` guards both behaviours. A car whose
+ *  lamps are baked into one shared texture (G-Wagen) has nothing separable
+ *  to glow, so it is left out by design.
  */
 
 /** Per-car dashboard scaling (presentation only — physics untouched). */
@@ -260,9 +270,9 @@ const gwagon: CarDefinition = {
       maxPowerHP: 850,
       maxTorqueNm: 1000,
       maxPowerRPM: 6000,
-      maxTorqueRPM: 2500,
+      maxTorqueRPM: 3000,
       redlineRPM: 6500,
-      revLimiterRPM: 6500,
+      revLimiterRPM: 6800,
       idleRPM: 700,
       torqueCurve: [
         [0, 0.35],
@@ -395,10 +405,10 @@ const urus: CarDefinition = {
       // stock axle ratio; shortened to 3.9 here so 8th reaches the 320
       // target on the stock 22" rolling radius.
       gearRatios: [5.0, 3.2, 2.143, 1.72, 1.313, 1.0, 0.823, 0.64],
-      finalDriveRatio: 3.9,
+      finalDriveRatio: 3.5,
       reverseRatio: 3.478,
       launchControlRPM: 4000,
-      autoUpshiftRPM: 6300,
+      autoUpshiftRPM: 6700,
       torqueConverter: {
         ...CAR_PHYSICS.transmission.torqueConverter,
         creepForce: 1900,

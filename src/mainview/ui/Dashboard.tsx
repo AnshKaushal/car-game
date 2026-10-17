@@ -1,129 +1,279 @@
-import { useEffect, useRef } from "react"
+import { useEffect, useMemo, useRef } from "react"
 import type { CarTelemetry } from "../systems/CarController"
 
 const RED_FROM_RPM = 6750
 const MAX_RPM = 8000
 const MAX_KMH = 340
 
-function angleFor(frac: number) {
-  return -120 + Math.max(0, Math.min(1, frac)) * 240
-}
-function polar(cx: number, cy: number, r: number, deg: number) {
-  const a = ((deg - 90) * Math.PI) / 180
-  return { x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) }
-}
+type Side = "left" | "right"
+type Kind = "speed" | "rpm"
 
-interface GaugeRefs {
-  needleRef: { current: SVGGElement | null }
-  numRef: { current: SVGTextElement | null }
-  rimRef?: { current: SVGCircleElement | null }
-}
+// ---- geometry (viewBox units; viewBox is S x S, pivot in the corner) --------
+const S = 200
+const R_RIM = 190
+const R_PROG = 185
+const R_BAND = 180
+const R_TICK = 180 // outer end of ticks
+const R_LABEL = 150
+const R_HUB = 135
+const START = 6 // degrees from the bottom edge where the scale begins
+const END = 84 // degrees where it ends (90 = the screen's side edge)
+const N_BASE = R_HUB - 20 // start (hidden under the hub)
+const N_SPLIT = R_TICK - 40 // where the red tip begins
+const N_END = R_TICK - 2 // outer end of the needle
 
 const SANS = 'Inter, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif'
 
-function BmwDial({
-  title,
-  unit,
-  maxLabel,
-  redFrom,
-  redRpm,
-  yellowRpm,
-  refs,
-  id,
-  modeLabel,
-}: {
-  title: string
-  unit: string
-  maxLabel: number
-  redFrom: number
-  redRpm: number
-  yellowRpm: number
-  refs: GaugeRefs
-  id: string
-  modeLabel?: string
-}) {
-  const CX = 100,
-    CY = 100,
-    CR = 78
-  const ticks: React.ReactNode[] = []
-  const isRpm = maxLabel <= 10
-  // Tick counts are derived so labelled ticks always land on integers:
-  // rpm dials get one label per 1000 rpm (maxLabel must be whole), speed
-  // dials one per 20 km/h. (A 7000-rpm dial with the old fixed 40 steps
-  // labelled 3.5→"4" twice — hence this.)
-  const steps = isRpm
-    ? Math.round(maxLabel * 5)
-    : maxLabel % 20 === 0
-      ? (maxLabel / 20) * 4
-      : 68
-  const labelEvery = isRpm ? 5 : maxLabel % 20 === 0 ? 4 : 8
+const BLUE = "#5fb4ff"
+const AMBER = "#ffb020"
+const RED = "#ff3b30"
+const OFF = "#3a4350"
 
-  for (let i = 0; i <= steps; i++) {
-    const frac = i / steps
-    const a = angleFor(frac)
-    const labelled = i % labelEvery === 0 || i === steps
-    const p1 = polar(CX, CY, CR, a)
-    const p2 = polar(CX, CY, CR - (labelled ? 12 : 6), a)
-    const rpm = frac * maxLabel * 1000
-    const red = isRpm && rpm >= redRpm
-    const yellow = isRpm && rpm >= yellowRpm && !red
-    ticks.push(
+const ang = (frac: number) =>
+  START + Math.max(0, Math.min(1, frac)) * (END - START)
+
+function pt(side: Side, r: number, deg: number) {
+  const a = (deg * Math.PI) / 180
+  const dx = r * Math.cos(a)
+  return { x: side === "left" ? dx : S - dx, y: S - r * Math.sin(a) }
+}
+
+function arc(side: Side, r: number, d0: number, d1: number) {
+  const p0 = pt(side, r, d0)
+  const p1 = pt(side, r, d1)
+  const sweep = side === "left" ? 0 : 1
+  return `M ${p0.x} ${p0.y} A ${r} ${r} 0 0 ${sweep} ${p1.x} ${p1.y}`
+}
+
+function sector(side: Side, r: number) {
+  const cx = side === "left" ? 0 : S
+  const p0 = pt(side, r, 0)
+  const p1 = pt(side, r, 90)
+  const sweep = side === "left" ? 0 : 1
+  return `M ${cx} ${S} L ${p0.x} ${p0.y} A ${r} ${r} 0 0 ${sweep} ${p1.x} ${p1.y} Z`
+}
+
+const ease = (x: number) => x * x * (3 - 2 * x)
+
+// ---- refs ------------------------------------------------------------------
+interface DialRefs {
+  needle: { current: SVGGElement | null }
+  progress: { current: SVGPathElement | null }
+  num: { current: SVGTextElement | null }
+  icon: { current: SVGGElement | null }
+  rim: { current: SVGPathElement | null }
+}
+
+function useDialRefs(): DialRefs {
+  return {
+    needle: useRef<SVGGElement | null>(null),
+    progress: useRef<SVGPathElement | null>(null),
+    num: useRef<SVGTextElement | null>(null),
+    icon: useRef<SVGGElement | null>(null),
+    rim: useRef<SVGPathElement | null>(null),
+  }
+}
+
+// ---- scale (ticks, labels, red band) ----------------------------------------
+function buildScale(
+  side: Side,
+  kind: Kind,
+  maxValue: number,
+  redFrom: number,
+  yellowFrom: number,
+) {
+  const out: React.ReactNode[] = []
+  const isRpm = kind === "rpm"
+  const unitMax = isRpm ? maxValue : maxValue
+  const major = isRpm ? 1000 : maxValue <= 100 ? 10 : maxValue <= 200 ? 20 : 40
+  const minor = isRpm ? 200 : major === 10 ? 5 : major / 4
+  const n = Math.floor(unitMax / minor + 1e-6)
+
+  for (let i = 0; i <= n; i++) {
+    const v = i * minor
+    const frac = v / maxValue
+    const a = ang(frac)
+    const isMajor = Math.abs(v / major - Math.round(v / major)) < 1e-6
+    const red = isRpm && v >= redFrom
+    const yellow = isRpm && v >= yellowFrom && !red
+    const p1 = pt(side, R_TICK, a)
+    const p2 = pt(side, R_TICK - (isMajor ? 21 : 10), a)
+    out.push(
       <line
-        key={i}
+        key={"k" + i}
         x1={p1.x}
         y1={p1.y}
         x2={p2.x}
         y2={p2.y}
         stroke={
           red
-            ? "#e30613"
+            ? "#ff3b30"
             : yellow
               ? "#facc15"
-              : labelled
-                ? "#f2f4f7"
-                : "rgba(242,244,247,0.45)"
+              : isMajor
+                ? "#f1f3f6"
+                : "rgba(255,222,212,0.5)"
         }
-        strokeWidth={labelled ? 2.6 : 1.2}
+        strokeWidth={isMajor ? 2.4 : 1.1}
         strokeLinecap="round"
       />,
     )
-    if (labelled) {
-      const pt = polar(CX, CY, CR - 25, a)
-      const val = isRpm
-        ? Math.round(frac * maxLabel)
-        : Math.round((frac * maxLabel) / 10) * 10
-      ticks.push(
+    if (isMajor) {
+      const lp = pt(side, R_LABEL, a)
+      const label = isRpm ? Math.round(v / 1000) : Math.round(v)
+      out.push(
         <text
-          key={"t" + i}
-          x={pt.x}
-          y={pt.y + 5}
+          key={"l" + i}
+          x={lp.x}
+          y={lp.y + 4.6}
           textAnchor="middle"
-          fontSize="12.5"
-          fill={red ? "#ff5a5a" : yellow ? "#facc15" : "#e8ebef"}
-          fontFamily={SANS}
+          fontSize="13"
           fontWeight={600}
+          fontFamily={SANS}
+          fill={red ? "#ff6a60" : yellow ? "#facc15" : "#d9dee6"}
         >
-          {val}
+          {label}
         </text>,
       )
     }
   }
 
-  const r0 = polar(CX, CY, CR - 1, angleFor(redFrom))
-  const r1 = polar(CX, CY, CR - 1, angleFor(1))
-  const largeArc = (1 - redFrom) * 240 > 180 ? 1 : 0
-  const tip = polar(CX, CY, CR - 6, 0)
-  const tail = polar(CX, CY, 14, 180)
+  if (isRpm && redFrom < maxValue) {
+    out.push(
+      <path
+        key="band"
+        d={arc(side, R_BAND, ang(redFrom / maxValue), ang(1))}
+        fill="none"
+        stroke="#e30613"
+        strokeWidth="4"
+      />,
+    )
+  }
+  return out
+}
+
+// ---- telltale icons (drawn in a 24x24 box) -----------------------------------
+function ParkIcon() {
+  return (
+    <g
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+    >
+      <path d="M4.6 6.2a8.5 8.5 0 0 0 0 11.6" />
+      <path d="M19.4 6.2a8.5 8.5 0 0 1 0 11.6" />
+      <circle cx="12" cy="12" r="6.6" />
+      <path
+        d="M10.1 15.6V8.4h2.4a2.1 2.1 0 0 1 0 4.2h-2.4"
+        strokeLinejoin="round"
+      />
+    </g>
+  )
+}
+
+function DriftIcon() {
+  return (
+    <g
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M3 14V11.6l2.2-3.2h7.6l3.2 3.2h3.4V14z" />
+      <circle cx="7.2" cy="14.6" r="1.5" fill="currentColor" stroke="none" />
+      <circle cx="16.6" cy="14.6" r="1.5" fill="currentColor" stroke="none" />
+      <path d="M3 18.6c2-1.8 4 1.8 6 0s4 1.8 6 0 4 1.8 6 0" />
+      <path d="M3 22c2-1.8 4 1.8 6 0s4 1.8 6 0 4 1.8 6 0" />
+    </g>
+  )
+}
+
+// ---- the dial ----------------------------------------------------------------
+interface DialProps {
+  side: Side
+  kind: Kind
+  id: string
+  maxValue: number
+  redFrom?: number
+  yellowFrom?: number
+  caption: string
+  captionColor: string
+  refs: DialRefs
+}
+
+function Dial({
+  side,
+  kind,
+  id,
+  maxValue,
+  redFrom = Infinity,
+  yellowFrom = Infinity,
+  caption,
+  captionColor,
+  refs,
+}: DialProps) {
+  const cx = side === "left" ? 0 : S
+  const dir = side === "left" ? 1 : -1
+  const sign = side === "left" ? -1 : 1
+  const X = (u: number) => (side === "left" ? u : S - u)
+  const Y = (v: number) => S - v
+  const nx = (u: number) => cx + dir * u
+
+  const scale = useMemo(
+    () => buildScale(side, kind, maxValue, redFrom, yellowFrom),
+    [side, kind, maxValue, redFrom, yellowFrom],
+  )
+
+  const bar = (u0: number, w0: number, u1: number, w1: number) =>
+    [
+      [u0, -w0],
+      [u1, -w1],
+      [u1, w1],
+      [u0, w0],
+    ]
+      .map(([u, d]) => `${nx(u)},${S + d}`)
+      .join(" ")
+
+  const body = bar(N_BASE, 3.4, N_SPLIT + 6, 2.2)
+  const tip = bar(N_SPLIT, 2.2, N_END, 1.0)
+
+  const iconPos = { x: X(34) - 12, y: Y(86) - 12 }
 
   return (
-    <svg viewBox="0 0 200 200" className="h-auto w-full">
+    <svg viewBox={`0 0 ${S} ${S}`} className="block h-auto w-full">
       <defs>
-        <radialGradient id={`${id}-face`} cx="50%" cy="38%" r="75%">
-          <stop offset="0%" stopColor="#1b2029" />
-          <stop offset="55%" stopColor="#101319" />
-          <stop offset="100%" stopColor="#07090c" />
+        <radialGradient
+          id={`${id}-face`}
+          gradientUnits="userSpaceOnUse"
+          cx={cx}
+          cy={S}
+          r={R_RIM}
+        >
+          <stop offset="0%" stopColor="#1c222c" />
+          <stop offset="55%" stopColor="#10141a" />
+          <stop offset="100%" stopColor="#07090d" />
         </radialGradient>
-        <linearGradient id={`${id}-chrome`} x1="0" y1="0" x2="1" y2="1">
+        <radialGradient
+          id={`${id}-hub`}
+          gradientUnits="userSpaceOnUse"
+          cx={cx}
+          cy={S}
+          r={R_HUB}
+        >
+          <stop offset="0%" stopColor="#04060a" />
+          <stop offset="70%" stopColor="#0b0e14" />
+          <stop offset="100%" stopColor="#171c25" />
+        </radialGradient>
+        <linearGradient
+          id={`${id}-chrome`}
+          gradientUnits="userSpaceOnUse"
+          x1="0"
+          y1="0"
+          x2={S}
+          y2={S}
+        >
           <stop offset="0%" stopColor="#f4f6f9" />
           <stop offset="25%" stopColor="#9aa1ab" />
           <stop offset="50%" stopColor="#e8ecf1" />
@@ -132,197 +282,237 @@ function BmwDial({
         </linearGradient>
       </defs>
 
-      <circle
-        ref={refs.rimRef}
-        cx={CX}
-        cy={CY}
-        r={CR + 9}
+      {/* face + rim */}
+      <path
+        d={sector(side, R_RIM + 3)}
+        fill={`url(#${id}-face)`}
+        opacity="0.95"
+      />
+      <path
+        ref={refs.rim}
+        d={arc(side, R_RIM, 0, 90)}
         fill="none"
         stroke={`url(#${id}-chrome)`}
         strokeWidth="6"
       />
-      <circle
-        cx={CX}
-        cy={CY}
-        r={CR + 5.5}
+      <path
+        d={arc(side, R_RIM - 4.5, 0, 90)}
         fill="none"
         stroke="#04060a"
         strokeWidth="1.5"
         opacity="0.9"
       />
-      <circle
-        cx={CX}
-        cy={CY}
-        r={CR + 4}
-        fill={`url(#${id}-face)`}
-        stroke="#232a35"
+      <path
+        d={arc(side, 176, START - 4, END + 4)}
+        fill="none"
+        stroke="rgba(255,255,255,0.07)"
         strokeWidth="1"
       />
 
-      {redFrom < 1 && (
-        <path
-          d={`M ${r0.x} ${r0.y} A ${CR - 1} ${CR - 1} 0 ${largeArc} 1 ${r1.x} ${r1.y}`}
-          fill="none"
-          stroke="#e30613"
-          strokeWidth="4"
-          opacity="0.95"
-          strokeLinecap="round"
-        />
-      )}
-      {ticks}
+      {/* scale */}
+      {scale}
 
-      <text
-        x={CX}
-        y={CY - 18}
-        textAnchor="middle"
-        fontSize="9"
-        fill="#8f99a8"
-        fontFamily={SANS}
-        letterSpacing="3"
-        fontWeight={600}
+      {/* progress arc (lit track behind the needle) */}
+      <path
+        ref={refs.progress}
+        d={arc(side, R_PROG, START, START)}
+        fill="none"
+        strokeWidth="3"
+      />
+
+      {/* needle: pivot is the screen corner; the hub below covers its base */}
+      <g
+        ref={refs.needle}
+        transform={`rotate(${sign * START} ${cx} ${S})`}
+        style={{ filter: "drop-shadow(0 0 3px rgba(0,0,0,0.7))" }}
       >
-        {title}
-      </text>
+        <polygon points={body} fill="#eef1f5" />
+        <polygon points={tip} fill="#ff3b30" />
+      </g>
+
+      {/* hub overlaps the needle base */}
+      <path d={sector(side, R_HUB)} fill={`url(#${id}-hub)`} />
+      <path
+        d={arc(side, R_HUB, 0, 90)}
+        fill="none"
+        stroke={`url(#${id}-chrome)`}
+        strokeWidth="3.5"
+      />
+      <path
+        d={arc(side, R_HUB - 3.5, 0, 90)}
+        fill="none"
+        stroke="#000"
+        strokeWidth="1"
+        opacity="0.8"
+      />
+
+      {/* readout */}
       <text
-        ref={refs.numRef}
-        x={CX}
-        y={CY + 42}
+        ref={refs.num}
+        x={X(52)}
+        y={Y(34)}
         textAnchor="middle"
-        fontSize="30"
+        fontSize={kind === "rpm" ? 40 : 32}
+        fontWeight={700}
         fill="#ffffff"
         fontFamily={SANS}
-        fontWeight={700}
-        style={{ fontVariantNumeric: "tabular-nums" }}
-      >
-        0
-      </text>
+        style={{
+          fontVariantNumeric: "tabular-nums",
+          transformBox: "fill-box",
+          transformOrigin: "center",
+        }}
+      />
       <text
-        x={CX}
-        y={CY + 56}
+        x={X(52)}
+        y={Y(17)}
         textAnchor="middle"
-        fontSize={modeLabel ? "8" : "8.5"}
-        fill={
-          modeLabel ? (modeLabel === "AUTO" ? "#7db8ec" : "#cbd5e1") : "#8f99a8"
-        }
-        fontFamily={SANS}
-        letterSpacing={modeLabel ? "1.5" : "2.5"}
+        fontSize="8.5"
         fontWeight={600}
+        letterSpacing="2"
+        fill={captionColor}
+        fontFamily={SANS}
       >
-        {modeLabel ?? unit}
+        {caption}
       </text>
 
-      <g ref={refs.needleRef}>
-        <line
-          x1={tail.x}
-          y1={tail.y}
-          x2={tip.x}
-          y2={tip.y}
-          stroke="#e30613"
-          strokeWidth="4.5"
-          strokeLinecap="round"
-        />
-        <circle
-          cx={CX}
-          cy={CY}
-          r="10"
-          fill="#14181f"
-          stroke="#c7ced8"
-          strokeWidth="1.6"
-        />
-        <circle cx={CX} cy={CY} r="5.2" fill="#1c69b4" />
-        <path
-          d={`M ${CX} ${CY - 5.2} A 5.2 5.2 0 0 1 ${CX + 5.2} ${CY} L ${CX} ${CY} Z`}
-          fill="#ffffff"
-          opacity="0.92"
-        />
-        <path
-          d={`M ${CX} ${CY + 5.2} A 5.2 5.2 0 0 1 ${CX - 5.2} ${CY} L ${CX} ${CY} Z`}
-          fill="#ffffff"
-          opacity="0.92"
-        />
-        <circle cx={CX} cy={CY} r="1.6" fill="#0b0e13" />
+      {/* telltale */}
+      <g transform={`translate(${iconPos.x} ${iconPos.y})`}>
+        <g ref={refs.icon} style={{ color: OFF, opacity: 0.85 }}>
+          {kind === "speed" ? <ParkIcon /> : <DriftIcon />}
+        </g>
       </g>
     </svg>
   )
 }
 
+// ---- per-frame painters --------------------------------------------------------
+function paintDial(
+  refs: DialRefs,
+  side: Side,
+  frac: number,
+  color: string,
+  opacity: number,
+) {
+  const cx = side === "left" ? 0 : S
+  const sign = side === "left" ? -1 : 1
+  const a = ang(frac)
+  refs.needle.current?.setAttribute(
+    "transform",
+    `rotate(${sign * a} ${cx} ${S})`,
+  )
+  const p = refs.progress.current
+  if (p) {
+    p.setAttribute("d", arc(side, R_PROG, START, a))
+    p.style.opacity = String(opacity)
+    if (p.dataset.c !== color) {
+      p.dataset.c = color
+      p.setAttribute("stroke", color)
+      p.style.filter = `drop-shadow(0 0 4px ${color})`
+    }
+  }
+}
+
+function paintTelltale(
+  el: SVGGElement | null,
+  on: boolean,
+  color: string,
+  lit: boolean,
+) {
+  if (!el) return
+  el.style.color = on ? color : OFF
+  el.style.opacity = on ? (lit ? "1" : "0.12") : "0.85"
+  el.style.filter = on && lit ? `drop-shadow(0 0 4px ${color})` : "none"
+}
+
+// ---- dashboard -------------------------------------------------------------------
 export default function Dashboard({ tele }: { tele: CarTelemetry }) {
   const teleRef = useRef(tele)
   teleRef.current = tele
-  // Per-car dial scaling rides on telemetry (updates at ~20 Hz, but the
-  // rAF loop below reads teleRef live, so a mid-session car swap — only
-  // possible from the menu — picks up the new scale immediately).
+
+  // Per-car dial scaling rides on telemetry (~20 Hz); the rAF loop reads
+  // teleRef live so a car swap picks up the new scale immediately.
   const dashMaxRpm = tele.dash?.maxRpm ?? MAX_RPM
   const dashRedFrom = tele.dash?.redFromRpm ?? RED_FROM_RPM
   const dashYellowFrom = dashRedFrom - 1000
   const dashMaxKmh = tele.dash?.maxKmh ?? MAX_KMH
-  const dashRef = useRef({ maxRpm: dashMaxRpm, red: dashRedFrom, yellow: dashYellowFrom, kmh: dashMaxKmh })
-  dashRef.current = { maxRpm: dashMaxRpm, red: dashRedFrom, yellow: dashYellowFrom, kmh: dashMaxKmh }
-  const spdNeedle = useRef<SVGGElement | null>(null)
-  const spdNum = useRef<SVGTextElement | null>(null)
-  const rpmNeedle = useRef<SVGGElement | null>(null)
-  const rpmNum = useRef<SVGTextElement | null>(null)
-  const rpmRim = useRef<SVGCircleElement | null>(null)
+  const dashRef = useRef({
+    maxRpm: dashMaxRpm,
+    red: dashRedFrom,
+    yellow: dashYellowFrom,
+    kmh: dashMaxKmh,
+  })
+  dashRef.current = {
+    maxRpm: dashMaxRpm,
+    red: dashRedFrom,
+    yellow: dashYellowFrom,
+    kmh: dashMaxKmh,
+  }
+
+  const spd = useDialRefs()
+  const rpm = useDialRefs()
 
   useEffect(() => {
     let raf = 0
-    let last = performance.now()
-    let dRpm = 0,
-      dKmh = 0
-    // BMW-style digital readout: the needle sweeps live, but the number
-    // steps at 2 Hz off the damped speed — no flickering last digit.
-    let lastNumT = 0
+    const start = performance.now()
+    let last = start
+    let dRpm = 0
+    let dKmh = 0
+    let lastNumT = -1e9
+    let lastGear = ""
+    let popT = -1e9
+    const BOOT = 1500 // self-test sweep on mount, like a real cluster
+
     const loop = (now: number) => {
       raf = requestAnimationFrame(loop)
       const dt = Math.min(0.05, (now - last) / 1000)
       last = now
-      const t = teleRef.current
+      const t = teleRef.current as CarTelemetry
       const dash = dashRef.current
-      dRpm += (t.rpm - dRpm) * (1 - Math.exp(-dt * 14))
-      dKmh += (Math.abs(t.speedKmh) - dKmh) * (1 - Math.exp(-dt * 10))
 
-      if (rpmNeedle.current) {
-        rpmNeedle.current.setAttribute(
-          "transform",
-          `rotate(${angleFor(dRpm / dash.maxRpm)} 100 100)`,
-        )
+      const boot = now - start
+      const booting = boot < BOOT
+      let tRpm = t.rpm
+      let tKmh = Math.abs(t.speedKmh)
+      if (booting) {
+        const k = boot / BOOT
+        const f = k < 0.5 ? ease(k * 2) : 1 - ease((k - 0.5) * 2)
+        tRpm = f * dash.maxRpm
+        tKmh = f * dash.kmh
       }
 
-      if (spdNeedle.current) {
-        spdNeedle.current.setAttribute(
-          "transform",
-          `rotate(${angleFor(dKmh / dash.kmh)} 100 100)`,
-        )
+      dRpm += (tRpm - dRpm) * (1 - Math.exp(-dt * 14))
+      dKmh += (tKmh - dKmh) * (1 - Math.exp(-dt * 10))
+
+      // ---- speed
+      paintDial(spd, "left", dKmh / dash.kmh, BLUE, 0.9)
+      if (spd.num.current && (booting || now - lastNumT >= 500)) {
+        lastNumT = now
+        spd.num.current.textContent = String(Math.round(dKmh))
       }
 
-      if (rpmNum.current) {
-        rpmNum.current.textContent = teleRef.current.gearLabel
-        rpmNum.current.setAttribute(
-          "fill",
-          teleRef.current.gearLabel === "R"
-            ? "#ff5a5a"
-            : teleRef.current.gearLabel === "N"
-              ? "#f5b942"
-              : "#ffffff",
-        )
-      }
+      // ---- rpm
+      const limiter = !booting && dRpm >= dash.red
+      const warning = !booting && dRpm >= dash.yellow
+      const flash = limiter ? (Math.sin(now * 0.045) > 0 ? 1 : 0.1) : 1
+      paintDial(
+        rpm,
+        "right",
+        dRpm / dash.maxRpm,
+        limiter ? "#ff2d2d" : warning ? "#facc15" : BLUE,
+        limiter ? flash : 0.9,
+      )
 
-      if (rpmRim.current) {
-        const limiter = dRpm >= dash.red
-        const warning = dRpm >= dash.yellow
-        const flash = limiter ? (Math.sin(now * 0.045) > 0 ? 1 : 0.10) : 1
-
-        rpmRim.current.setAttribute(
+      const rim = rpm.rim.current
+      if (rim) {
+        rim.setAttribute(
           "stroke",
           limiter ? `rgba(227,6,19,${flash})` : "url(#bmw-rpm-chrome)",
         )
-
-        rpmRim.current.setAttribute(
+        rim.setAttribute(
           "stroke-width",
           limiter ? String(6 + flash * 2) : warning ? "7" : "6",
         )
-
-        rpmRim.current.style.filter = limiter
+        rim.style.filter = limiter
           ? flash > 0.5
             ? "drop-shadow(0 0 5px rgba(227,6,19,0.95))"
             : "none"
@@ -331,13 +521,37 @@ export default function Dashboard({ tele }: { tele: CarTelemetry }) {
             : "none"
       }
 
-      if (spdNum.current && now - lastNumT >= 500) {
-        lastNumT = now
-        spdNum.current.textContent = String(Math.round(dKmh))
+      // ---- gear (with a small pop on change)
+      const gear = t.gearLabel
+      const g = rpm.num.current
+      if (g) {
+        if (g.textContent !== gear) g.textContent = gear
+        if (gear !== lastGear) {
+          lastGear = gear
+          popT = now
+        }
+        const k = Math.max(0, 1 - (now - popT) / 260)
+        g.style.transform = `scale(${1 + 0.28 * k * k})`
+        g.setAttribute(
+          "fill",
+          gear === "R" ? "#ff5a5a" : gear === "N" ? "#f5b942" : "#ffffff",
+        )
       }
+
+      // ---- telltales: all lit during the self-test, then live
+      const blink = Math.floor(now / 170) % 2 === 0
+      paintTelltale(spd.icon.current, booting || t.parkingBrake, RED, true)
+      paintTelltale(
+        rpm.icon.current,
+        booting || !!t.drift,
+        AMBER,
+        booting || blink,
+      )
     }
+
     raf = requestAnimationFrame(loop)
     return () => cancelAnimationFrame(raf)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const launching = tele.launchArmed || tele.launching
@@ -359,43 +573,29 @@ export default function Dashboard({ tele }: { tele: CarTelemetry }) {
         </div>
       )}
 
-      {}
-
-      {tele.parkingBrake && (
-        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 rounded-xl border border-amber-400/60 bg-black/70 px-5 py-1.5 text-center backdrop-blur">
-          <span className="text-[15px] font-bold tracking-[0.3em] text-amber-400">
-            PARK
-          </span>
-          <span className="ml-2 text-[11px] tracking-wide text-gray-300">
-            press P to release
-          </span>
-        </div>
-      )}
-      <div className="absolute inset-x-0 bottom-0 flex items-end justify-between px-4 pb-4 sm:px-6 sm:pb-5">
-        <div className="w-[clamp(150px,20vw,250px)]">
-          <BmwDial
-            title="SPEED"
-            unit="KM/H"
-            maxLabel={dashMaxKmh}
-            redFrom={2}
-            redRpm={Infinity}
-            yellowRpm={Infinity}
-            refs={{ needleRef: spdNeedle, numRef: spdNum }}
+      <div className="absolute inset-x-0 bottom-0 flex items-end justify-between">
+        <div className="w-[clamp(190px,25vw,340px)]">
+          <Dial
+            side="left"
+            kind="speed"
             id="bmw-spd"
+            maxValue={dashMaxKmh}
+            caption="KM/H"
+            captionColor="#8f99a8"
+            refs={spd}
           />
         </div>
-
-        <div className="w-[clamp(150px,20vw,250px)]">
-          <BmwDial
-            title="POWER"
-            unit=""
-            maxLabel={dashMaxRpm / 1000}
-            redFrom={dashRedFrom / dashMaxRpm}
-            redRpm={dashRedFrom}
-            yellowRpm={dashYellowFrom}
-            refs={{ needleRef: rpmNeedle, numRef: rpmNum, rimRef: rpmRim }}
+        <div className="w-[clamp(190px,25vw,340px)]">
+          <Dial
+            side="right"
+            kind="rpm"
             id="bmw-rpm"
-            modeLabel={tele.autoMode ? "AUTO" : "MANUAL"}
+            maxValue={dashMaxRpm}
+            redFrom={dashRedFrom}
+            yellowFrom={dashYellowFrom}
+            caption={tele.autoMode ? "AUTO" : "MANUAL"}
+            captionColor={tele.autoMode ? "#7db8ec" : "#cbd5e1"}
+            refs={rpm}
           />
         </div>
       </div>

@@ -97,6 +97,8 @@ export class RemoteCar {
   steerAngle = 0
   wheelOmega = 0
   speed = 0
+  /** Brake-light target derived from speed drop (see onPacket). */
+  private brakeTarget = 0
   smoke = false
   drift = false
   progress = 0
@@ -272,6 +274,11 @@ export class RemoteCar {
     // the buffer holds the history, target* holds the current sample.
     this.interp.append(state, arrivalMs, state.seq)
     this.steerAngle = state.steer
+    // No brake pedal on the wire, and adding one means a protocol change.
+    // A speed drop between packets is an honest enough proxy for "this peer
+    // is on the pedals" — same signal a spectator reads from the outside.
+    if (state.speed < this.speed - 0.3) this.brakeTarget = 1
+    else if (state.speed > this.speed + 0.05) this.brakeTarget = 0
     this.speed = state.speed
     this.smoke = state.smoke
     this.drift = state.drift
@@ -698,6 +705,7 @@ export class RemoteCar {
       omegas,
       dt,
     )
+    this.visual.setBrake(this.brakeTarget)
 
     // Spawn tire smoke if peer is drifting or doing a burnout
     if (smokeSystem && (this.smoke || this.drift) && this.speed > 5) {
