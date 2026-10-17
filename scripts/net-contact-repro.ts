@@ -62,7 +62,10 @@ function makeWorld(groundFriction = 1.0) {
   const world = createWorld()
   const ground = world.createRigidBody(R.RigidBodyDesc.fixed())
   world.createCollider(
-    R.ColliderDesc.cuboid(1000, 5, 1000).setTranslation(0, -5.05, 0).setFriction(groundFriction).setRestitution(0),
+    R.ColliderDesc.cuboid(1000, 5, 1000)
+      .setTranslation(0, -5.05, 0)
+      .setFriction(groundFriction)
+      .setRestitution(0),
     ground,
   )
   const scene = new THREE.Scene()
@@ -71,12 +74,39 @@ function makeWorld(groundFriction = 1.0) {
 function ghostCollider(car: RemoteCar): any {
   return (car as unknown as { collider: any }).collider
 }
-function feed(car: RemoteCar, seq: number, x: number, y: number, z: number, vx: number, vy: number, vz: number, arr: number) {
+function feed(
+  car: RemoteCar,
+  seq: number,
+  x: number,
+  y: number,
+  z: number,
+  vx: number,
+  vy: number,
+  vz: number,
+  arr: number,
+) {
   const r = validateStatePacket({
-    id: "p", t: 0, seq, sess: "s", x, y, z,
-    qx: 0, qy: 0, qz: 0, qw: 1, vx, vy, vz,
-    steer: 0, speed: 0, rpm: 800, gear: 1,
-    drift: false, smoke: false, progress: seq,
+    id: "p",
+    t: 0,
+    seq,
+    sess: "s",
+    x,
+    y,
+    z,
+    qx: 0,
+    qy: 0,
+    qz: 0,
+    qw: 1,
+    vx,
+    vy,
+    vz,
+    steer: 0,
+    speed: 0,
+    rpm: 800,
+    gear: 1,
+    drift: false,
+    smoke: false,
+    progress: seq,
   })
   if (!r.ok) throw new Error("bad test packet")
   car.onPacket(r.state, arr)
@@ -94,7 +124,10 @@ interface StepRec {
   impulse: number
 }
 /** Mirror of sampleContacts classification, observing via borrowed handle. */
-function classify(world: any, col: any): { support: boolean; traffic: boolean; impulse: number; normals: string } {
+function classify(
+  world: any,
+  col: any,
+): { support: boolean; traffic: boolean; impulse: number; normals: string } {
   let support = false
   let traffic = false
   let impulse = 0
@@ -137,14 +170,21 @@ function summarize(label: string, trace: StepRec[]) {
   for (let i = 1; i < ys.length; i++) {
     const d = Math.sign(ys[i] - ys[i - 1])
     if (d !== 0) {
-      if (lastDir !== 0 && d !== lastDir && Math.abs(ys[i - 1] - extremum) > 0.05) reversals++
+      if (
+        lastDir !== 0 &&
+        d !== lastDir &&
+        Math.abs(ys[i - 1] - extremum) > 0.05
+      )
+        reversals++
       if (d !== lastDir) {
         lastDir = d
         extremum = ys[i - 1]
       }
     }
   }
-  const finite = trace.every((s) => [s.y, s.vy, s.speed, s.cmdVy].every(Number.isFinite))
+  const finite = trace.every((s) =>
+    [s.y, s.vy, s.speed, s.cmdVy].every(Number.isFinite),
+  )
   console.log(
     `${label}: steps=${trace.length} minBottom=${minB.toFixed(3)} maxBottom=${maxB.toFixed(3)} ` +
       `supportSteps=${supSteps} driveIntoSupport=${driveInSteps} yReversals>5cm=${reversals} finite=${finite}`,
@@ -190,9 +230,13 @@ function summarize(label: string, trace: StepRec[]) {
       strikerPostMin = Math.min(strikerPostMin, Math.hypot(svv.x, svv.z))
     }
     trace.push({
-      y: p.y, bottom: p.y - BOTTOM_OFF, cmdVy: cmd.y,
-      vy: v.y, speed: gsp,
-      support: c.support, traffic: c.traffic,
+      y: p.y,
+      bottom: p.y - BOTTOM_OFF,
+      cmdVy: cmd.y,
+      vy: v.y,
+      speed: gsp,
+      support: c.support,
+      traffic: c.traffic,
       mode: getNetDiagSnapshot().peers["r-t1a"]?.corrMode ?? "?",
       impulse: c.impulse,
     })
@@ -205,10 +249,24 @@ function summarize(label: string, trace: StepRec[]) {
   // the ghost carries real momentum.
   const sv = striker.linvel()
   const sSpeed = Math.hypot(sv.x, sv.z)
-  console.log(`T1a: contact at step ${contactAt}, striker end speed=${sSpeed.toFixed(2)} m/s, ghost z=${car.colliderBody!.translation().z.toFixed(2)} m`)
-  check("T1a striker survives impact window (>= 1.5 m/s)", strikerPostMin >= 1.5, strikerPostMin)
-  check("T1a ghost receives momentum (peak >= 4 m/s)", ghostPeak >= 4, ghostPeak)
-  check("T1a no deep ground penetration (bottom >= -0.06)", s.minB >= GROUND_TOP - PEN_TOL, s.minB)
+  console.log(
+    `T1a: contact at step ${contactAt}, striker end speed=${sSpeed.toFixed(2)} m/s, ghost z=${car.colliderBody!.translation().z.toFixed(2)} m`,
+  )
+  check(
+    "T1a striker survives impact window (>= 1.5 m/s)",
+    strikerPostMin >= 1.5,
+    strikerPostMin,
+  )
+  check(
+    "T1a ghost receives momentum (peak >= 4 m/s)",
+    ghostPeak >= 4,
+    ghostPeak,
+  )
+  check(
+    "T1a no deep ground penetration (bottom >= -0.06)",
+    s.minB >= GROUND_TOP - PEN_TOL,
+    s.minB,
+  )
   check("T1a state stays finite", s.finite)
   car.dispose(scene, world)
   world.free()
@@ -237,9 +295,13 @@ function summarize(label: string, trace: StepRec[]) {
     const v = car.colliderBody!.linvel()
     const c = classify(world, col)
     trace.push({
-      y: p.y, bottom: p.y - BOTTOM_OFF, cmdVy: cmd.y,
-      vy: v.y, speed: Math.hypot(v.x, v.z),
-      support: c.support, traffic: c.traffic,
+      y: p.y,
+      bottom: p.y - BOTTOM_OFF,
+      cmdVy: cmd.y,
+      vy: v.y,
+      speed: Math.hypot(v.x, v.z),
+      support: c.support,
+      traffic: c.traffic,
       mode: getNetDiagSnapshot().peers["r-t1b"]?.corrMode ?? "?",
       impulse: c.impulse,
     })
@@ -280,16 +342,38 @@ function summarize(label: string, trace: StepRec[]) {
   const ret = trace.slice(240)
   const returnPeak = Math.max(...ret.map((t) => t.speed))
   const snaps = getNetDiagSnapshot().peers["r-t1b"]?.snaps ?? -1
-  console.log(`T1b: bulldozed to z=${bulldozed.toFixed(2)} m, return peak speed=${returnPeak.toFixed(2)} m/s (residual coast), return peak correction=${retCorrPeak.toFixed(2)} m/s, warps=${snaps}`)
-  check("T1b bulldozing observed (ghost creeps while pushed)", bulldozed < -0.5, bulldozed)
+  console.log(
+    `T1b: bulldozed to z=${bulldozed.toFixed(2)} m, return peak speed=${returnPeak.toFixed(2)} m/s (residual coast), return peak correction=${retCorrPeak.toFixed(2)} m/s, warps=${snaps}`,
+  )
+  check(
+    "T1b bulldozing observed (ghost creeps while pushed)",
+    bulldozed < -0.5,
+    bulldozed,
+  )
   // The pop metric is NETWORK-INDUCED return velocity (correction cmd),
   // not residual knock momentum (which coasts honestly): capped at 3 in
   // recover, small in gated follow.
-  check("T1b return correction is gradual (peak cmd <= 3.5 m/s)", retCorrPeak <= 3.5, retCorrPeak)
-  check("T1b return has no command jumps (dv <= 0.25 m/s/step)", retDvPeak <= 0.25, retDvPeak)
-  check("T1b return converges (err shrinking)", errEnd >= 0 && errEnd < errStart, { errStart, errEnd })
+  check(
+    "T1b return correction is gradual (peak cmd <= 3.5 m/s)",
+    retCorrPeak <= 3.5,
+    retCorrPeak,
+  )
+  check(
+    "T1b return has no command jumps (dv <= 0.25 m/s/step)",
+    retDvPeak <= 0.25,
+    retDvPeak,
+  )
+  check(
+    "T1b return converges (err shrinking)",
+    errEnd >= 0 && errEnd < errStart,
+    { errStart, errEnd },
+  )
   check("T1b return uses no warp", snaps === 0, snaps)
-  check("T1b no deep ground penetration (bottom >= -0.06)", s.minB >= GROUND_TOP - PEN_TOL, s.minB)
+  check(
+    "T1b no deep ground penetration (bottom >= -0.06)",
+    s.minB >= GROUND_TOP - PEN_TOL,
+    s.minB,
+  )
   check("T1b state stays finite", s.finite)
   car.dispose(scene, world)
   world.free()
@@ -329,9 +413,13 @@ function summarize(label: string, trace: StepRec[]) {
       const v = car.colliderBody!.linvel()
       const c = classify(world, col)
       trace.push({
-        y: p.y, bottom: p.y - BOTTOM_OFF, cmdVy: cmd.y,
-        vy: v.y, speed: Math.hypot(v.x, v.z),
-        support: c.support, traffic: c.traffic,
+        y: p.y,
+        bottom: p.y - BOTTOM_OFF,
+        cmdVy: cmd.y,
+        vy: v.y,
+        speed: Math.hypot(v.x, v.z),
+        support: c.support,
+        traffic: c.traffic,
         mode: getNetDiagSnapshot().peers["r-t2"]?.corrMode ?? "?",
         impulse: c.impulse,
       })
@@ -342,11 +430,30 @@ function summarize(label: string, trace: StepRec[]) {
   const s = summarize("T2", trace)
   const tail = trace.slice(-60)
   const tailMin = Math.min(...tail.map((t) => t.bottom))
-  check("T2 traffic contact occurs", trace.some((t) => t.traffic))
-  check("T2 no deep ground penetration (bottom >= -0.06)", s.minB >= GROUND_TOP - PEN_TOL, s.minB)
-  check("T2 recovers height after crest (tail bottom >= 0.20)", tailMin >= REST_BOTTOM - 0.10, tailMin)
-  check("T2 no sustained drive-into-support (steps < 25%)", s.driveInSteps < trace.length * 0.25, s.driveInSteps)
-  check("T2 no repeated vertical oscillation (<6 reversals)", s.reversals < 6, s.reversals)
+  check(
+    "T2 traffic contact occurs",
+    trace.some((t) => t.traffic),
+  )
+  check(
+    "T2 no deep ground penetration (bottom >= -0.06)",
+    s.minB >= GROUND_TOP - PEN_TOL,
+    s.minB,
+  )
+  check(
+    "T2 recovers height after crest (tail bottom >= 0.20)",
+    tailMin >= REST_BOTTOM - 0.1,
+    tailMin,
+  )
+  check(
+    "T2 no sustained drive-into-support (steps < 25%)",
+    s.driveInSteps < trace.length * 0.25,
+    s.driveInSteps,
+  )
+  check(
+    "T2 no repeated vertical oscillation (<6 reversals)",
+    s.reversals < 6,
+    s.reversals,
+  )
   void wall
   car.dispose(scene, world)
   world.free()
@@ -389,9 +496,13 @@ function summarize(label: string, trace: StepRec[]) {
     maxLat = Math.max(maxLat, Math.abs(p.x - (2.0 - 0.01 * Math.floor(i / 2))))
     const c = classify(world, col)
     trace.push({
-      y: p.y, bottom: p.y - BOTTOM_OFF, cmdVy: cmd.y,
-      vy: v.y, speed: Math.hypot(v.x, v.z),
-      support: c.support, traffic: c.traffic,
+      y: p.y,
+      bottom: p.y - BOTTOM_OFF,
+      cmdVy: cmd.y,
+      vy: v.y,
+      speed: Math.hypot(v.x, v.z),
+      support: c.support,
+      traffic: c.traffic,
       mode: getNetDiagSnapshot().peers["r-t3"]?.corrMode ?? "?",
       impulse: c.impulse,
     })
@@ -399,10 +510,20 @@ function summarize(label: string, trace: StepRec[]) {
   const s = summarize("T3", trace)
   const tail = trace.slice(-60)
   const tailMin = Math.min(...tail.map((t) => t.bottom))
-  console.log(`T3: max lateral displacement from owner line = ${maxLat.toFixed(2)} m`)
+  console.log(
+    `T3: max lateral displacement from owner line = ${maxLat.toFixed(2)} m`,
+  )
   check("T3 lateral knock stands (no snap-back to line)", maxLat > 0.3, maxLat)
-  check("T3 no deep ground penetration (bottom >= -0.06)", s.minB >= GROUND_TOP - PEN_TOL, s.minB)
-  check("T3 height recovers after bounce (tail bottom >= 0.15)", tailMin >= REST_BOTTOM - 0.15, tailMin)
+  check(
+    "T3 no deep ground penetration (bottom >= -0.06)",
+    s.minB >= GROUND_TOP - PEN_TOL,
+    s.minB,
+  )
+  check(
+    "T3 height recovers after bounce (tail bottom >= 0.15)",
+    tailMin >= REST_BOTTOM - 0.15,
+    tailMin,
+  )
   void other
   car.dispose(scene, world)
   world.free()
@@ -418,9 +539,14 @@ function summarize(label: string, trace: StepRec[]) {
   const col = ghostCollider(car)
   const T = 40_000_000
   car.nowOverride = T
-  for (let i = 0; i < 10; i++) feed(car, i, 0, 0.72, -i * 0.3, 0, 0, -9, T + i * 33)
+  for (let i = 0; i < 10; i++)
+    feed(car, i, 0, 0.72, -i * 0.3, 0, 0, -9, T + i * 33)
   car.nowOverride = T + 9 * 33 + 100
-  for (let i = 0; i < 120 && !getNetDiagSnapshot().peers["r-t4"]?.inContact; i++) {
+  for (
+    let i = 0;
+    i < 120 && !getNetDiagSnapshot().peers["r-t4"]?.inContact;
+    i++
+  ) {
     car.drive(FIXED_DT)
     world.step()
     car.sampleContacts(T + 9 * 33 + 100)
@@ -449,18 +575,33 @@ function summarize(label: string, trace: StepRec[]) {
     const v = car.colliderBody!.linvel()
     const c = classify(world, col)
     trace.push({
-      y: p.y, bottom: p.y - BOTTOM_OFF, cmdVy: cmd.y,
-      vy: v.y, speed: Math.hypot(v.x, v.z),
-      support: c.support, traffic: c.traffic,
+      y: p.y,
+      bottom: p.y - BOTTOM_OFF,
+      cmdVy: cmd.y,
+      vy: v.y,
+      speed: Math.hypot(v.x, v.z),
+      support: c.support,
+      traffic: c.traffic,
       mode: getNetDiagSnapshot().peers["r-t4"]?.corrMode ?? "?",
       impulse: c.impulse,
     })
   }
   const s = summarize("T4", trace)
   const last = trace[trace.length - 1]
-  check("T4 reconverges (final err < 1.5 m)", Math.abs(last.y - 0.72) < 1.5 && last.speed < 15, last)
-  check("T4 no warp during recovery", (getNetDiagSnapshot().peers["r-t4"]?.snaps ?? 0) === snapsBefore)
-  check("T4 recovery never penetrates road", s.minB >= GROUND_TOP - PEN_TOL, s.minB)
+  check(
+    "T4 reconverges (final err < 1.5 m)",
+    Math.abs(last.y - 0.72) < 1.5 && last.speed < 15,
+    last,
+  )
+  check(
+    "T4 no warp during recovery",
+    (getNetDiagSnapshot().peers["r-t4"]?.snaps ?? 0) === snapsBefore,
+  )
+  check(
+    "T4 recovery never penetrates road",
+    s.minB >= GROUND_TOP - PEN_TOL,
+    s.minB,
+  )
   car.dispose(scene, world)
   world.free()
 }
@@ -476,7 +617,8 @@ function summarize(label: string, trace: StepRec[]) {
   // Ghost starts 40 m up-track; owner hurtles -z at 30 m/s (108 km/h).
   const T = 50_000_000
   car.nowOverride = T
-  for (let i = 0; i < 40; i++) feed(car, i, 0, 0.72, 40 - i * 1.0, 0, 0, -30, T + i * 33)
+  for (let i = 0; i < 40; i++)
+    feed(car, i, 0, 0.72, 40 - i * 1.0, 0, 0, -30, T + i * 33)
   car.nowOverride = T + 39 * 33 + 100
   // Teleport ghost body onto its line so the test measures impact, not travel.
   car.colliderBody!.setTranslation({ x: 0, y: 0.72, z: 12 }, true)
@@ -492,18 +634,32 @@ function summarize(label: string, trace: StepRec[]) {
     const c = classify(world, col)
     if (c.traffic && !normLog) normLog = c.normals
     trace.push({
-      y: p.y, bottom: p.y - BOTTOM_OFF, cmdVy: cmd.y,
-      vy: v.y, speed: Math.hypot(v.x, v.z),
-      support: c.support, traffic: c.traffic,
+      y: p.y,
+      bottom: p.y - BOTTOM_OFF,
+      cmdVy: cmd.y,
+      vy: v.y,
+      speed: Math.hypot(v.x, v.z),
+      support: c.support,
+      traffic: c.traffic,
       mode: getNetDiagSnapshot().peers["r-t5"]?.corrMode ?? "?",
       impulse: c.impulse,
     })
   }
   const s = summarize("T5", trace)
-  console.log(`T5: first traffic normals: ${normLog || "(no traffic contact!)"}`)
-  check("T5 traffic contact occurs (no tunneling past)", trace.some((t) => t.traffic), normLog)
+  console.log(
+    `T5: first traffic normals: ${normLog || "(no traffic contact!)"}`,
+  )
+  check(
+    "T5 traffic contact occurs (no tunneling past)",
+    trace.some((t) => t.traffic),
+    normLog,
+  )
   check("T5 state stays finite at speed", s.finite)
-  check("T5 no deep ground penetration (bottom >= -0.06)", s.minB >= GROUND_TOP - PEN_TOL, s.minB)
+  check(
+    "T5 no deep ground penetration (bottom >= -0.06)",
+    s.minB >= GROUND_TOP - PEN_TOL,
+    s.minB,
+  )
   void parked
   car.dispose(scene, world)
   world.free()
@@ -528,15 +684,35 @@ function summarize(label: string, trace: StepRec[]) {
   const pitch = new THREE.Quaternion().setFromEuler(new THREE.Euler(0.17, 0, 0))
   {
     const r = validateStatePacket({
-      id: "p", t: 0, seq: 0, sess: "s", x: 0, y: 0.72, z: 0,
-      qx: pitch.x, qy: pitch.y, qz: pitch.z, qw: pitch.w,
-      vx: 0, vy: 0, vz: 0, steer: 0, speed: 0, rpm: 800, gear: 1,
-      drift: false, smoke: false, progress: 0,
+      id: "p",
+      t: 0,
+      seq: 0,
+      sess: "s",
+      x: 0,
+      y: 0.72,
+      z: 0,
+      qx: pitch.x,
+      qy: pitch.y,
+      qz: pitch.z,
+      qw: pitch.w,
+      vx: 0,
+      vy: 0,
+      vz: 0,
+      steer: 0,
+      speed: 0,
+      rpm: 800,
+      gear: 1,
+      drift: false,
+      smoke: false,
+      progress: 0,
     })
     if (!r.ok) throw new Error("bad test packet")
     car.onPacket(r.state, T)
   }
-  car.colliderBody!.setRotation({ x: pitch.x, y: pitch.y, z: pitch.z, w: pitch.w }, true)
+  car.colliderBody!.setRotation(
+    { x: pitch.x, y: pitch.y, z: pitch.z, w: pitch.w },
+    true,
+  )
   car.colliderBody!.setAngvel({ x: 0, y: 0, z: 0 }, true)
   for (let i = 0; i < 120; i++) {
     car.drive(FIXED_DT)
@@ -559,13 +735,17 @@ function summarize(label: string, trace: StepRec[]) {
       if (m2.numContacts() > 0) {
         const v2 = m2.normal()
         supRev = supRev || Math.abs(v2.y) > 0.7
-        recs.push(`rev flipped=${flipped} n=${m2.numContacts()} ny=${v2.y.toFixed(2)}`)
+        recs.push(
+          `rev flipped=${flipped} n=${m2.numContacts()} ny=${v2.y.toFixed(2)}`,
+        )
       }
     })
   })
   console.log(`T6: normals: ${recs.join(" | ") || "(no contacts)"}`)
   const p = car.colliderBody!.translation()
-  console.log(`T6: ghost y=${p.y.toFixed(3)} bottom~${(p.y - BOTTOM_OFF).toFixed(3)} (corners lower when pitched)`)
+  console.log(
+    `T6: ghost y=${p.y.toFixed(3)} bottom~${(p.y - BOTTOM_OFF).toFixed(3)} (corners lower when pitched)`,
+  )
   check("T6 support normals vertical in fwd ordering (|ny|>0.7)", supFwd, recs)
   check("T6 support normals vertical in rev ordering (|ny|>0.7)", supRev, recs)
   check("T6 state stays finite", [p.y].every(Number.isFinite))
@@ -606,7 +786,7 @@ function summarize(label: string, trace: StepRec[]) {
     now += 1000 / 120
     car.nowOverride = now
     if (i % 4 === 0) {
-      oz -= 10 * (1000 / 120) * 4 / 1000
+      oz -= (10 * (1000 / 120) * 4) / 1000
       feedOwner()
     }
     striker.setLinvel({ x: -12, y: 0, z: 0 }, true) // sustained driven push
@@ -622,9 +802,13 @@ function summarize(label: string, trace: StepRec[]) {
     if (dg?.corrMode === "recover") recoverSeen = true
     maxLat = Math.max(maxLat, Math.abs(p.x))
     trace.push({
-      y: p.y, bottom: p.y - BOTTOM_OFF, cmdVy: cmd.y,
-      vy: v.y, speed: Math.hypot(v.x, v.z),
-      support: c.support, traffic: c.traffic,
+      y: p.y,
+      bottom: p.y - BOTTOM_OFF,
+      cmdVy: cmd.y,
+      vy: v.y,
+      speed: Math.hypot(v.x, v.z),
+      support: c.support,
+      traffic: c.traffic,
       mode: dg?.corrMode ?? "?",
       impulse: c.impulse,
     })
@@ -633,14 +817,20 @@ function summarize(label: string, trace: StepRec[]) {
   const snaps = (getNetDiagSnapshot().peers["r-t7"]?.snaps ?? 0) - snapsBefore
   const errEnd = getNetDiagSnapshot().peers["r-t7"]?.posErrM ?? 99
   const last = trace[trace.length - 1]
-  console.log(`T7: max lateral=${maxLat.toFixed(2)} m warps=${snaps} final err=${errEnd.toFixed(2)} m`)
+  console.log(
+    `T7: max lateral=${maxLat.toFixed(2)} m warps=${snaps} final err=${errEnd.toFixed(2)} m`,
+  )
   check("T7 contact occurs (no tunneling)", contactSeen)
   check("T7 recovery observed", recoverSeen)
   check("T7 knock stands laterally (>1 m, no pin)", maxLat > 1, maxLat)
   check("T7 no warp on explained divergence", snaps === 0, snaps)
   check("T7 reconverges (final err < 1.5 m)", errEnd < 1.5, errEnd)
   check("T7 final speed sane (<15 m/s)", last.speed < 15, last.speed)
-  check("T7 no deep ground penetration (bottom >= -0.06)", s.minB >= GROUND_TOP - PEN_TOL, s.minB)
+  check(
+    "T7 no deep ground penetration (bottom >= -0.06)",
+    s.minB >= GROUND_TOP - PEN_TOL,
+    s.minB,
+  )
   check("T7 state stays finite", s.finite)
   car.dispose(scene, world)
   world.free()

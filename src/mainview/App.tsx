@@ -644,7 +644,7 @@ export default function App() {
         const gridPool = poolDefs.length > 0 ? poolDefs : [...CARS]
         let rand: () => number = Math.random
         if (useSharedField) {
-          let s = (setup!.seed! | 0) || 1
+          let s = setup!.seed! | 0 || 1
           rand = () => {
             s |= 0
             s = (s + 0x6d2b79f5) | 0
@@ -765,8 +765,7 @@ export default function App() {
           tb.setRotation({ x: tq.x, y: tq.y, z: tq.z, w: tq.w }, true)
           const tv0 =
             ((tprof.cruiseKmh ?? 100) / 3.6) * (0.9 + Math.random() * 0.15)
-          const tslope =
-            (roadCenterX(ts0 + 4) - roadCenterX(ts0 - 4)) / 8
+          const tslope = (roadCenterX(ts0 + 4) - roadCenterX(ts0 - 4)) / 8
           const tinv = 1 / Math.hypot(tslope, 1)
           tb.setLinvel(
             { x: tslope * tinv * tv0 * tdir, y: 0, z: -tinv * tv0 * tdir },
@@ -837,10 +836,7 @@ export default function App() {
             startPressed: false,
             pausePressed: false,
           }
-          const allCars = [
-            car,
-            ...rivals.map((r) => r.car),
-          ]
+          const allCars = [car, ...rivals.map((r) => r.car)]
           for (let i = 0; i < 120; i++) {
             for (const c of allCars) c.update(FIXED_DT, zeroInput)
             world.step()
@@ -1471,7 +1467,11 @@ export default function App() {
                 if (r.hi && d > DETAIL_FAR * DETAIL_FAR) {
                   r.hi = false
                   r.visual.setDetail(false)
-                } else if (!r.hi && d < DETAIL_NEAR * DETAIL_NEAR && upgrades < 2) {
+                } else if (
+                  !r.hi &&
+                  d < DETAIL_NEAR * DETAIL_NEAR &&
+                  upgrades < 2
+                ) {
                   upgrades++
                   r.hi = true
                   r.visual.setDetail(true)
@@ -1576,8 +1576,7 @@ export default function App() {
                   if (clear) break
                 }
                 const ntprof = makeTrafficProfile(Math.random, tdir)
-                const nyaw =
-                  roadDirYaw(aheadS) + (tdir === 1 ? 0 : Math.PI)
+                const nyaw = roadDirYaw(aheadS) + (tdir === 1 ? 0 : Math.PI)
                 const nnx = Math.cos(roadYaw(aheadS))
                 const nnz = Math.sin(roadYaw(aheadS))
                 tc.car.reset(
@@ -1625,7 +1624,9 @@ export default function App() {
                 })
                 .sort((a, b) => a.d - b.d)
               const tnear = new Set(tranked.slice(0, 3).map((o) => o.i))
-              trafficCars.forEach((r, i) => r.visual.setCastShadow(tnear.has(i)))
+              trafficCars.forEach((r, i) =>
+                r.visual.setCastShadow(tnear.has(i)),
+              )
             }
           }
           wm.update(-bp.z, carPos, grassTargetFor(car.forwardSpeed, raceActive))
@@ -1864,7 +1865,8 @@ export default function App() {
     }
   }, [session])
 
-  const menuOn = !loading && !error && !started && !showMultiplayerLobby && !showIntro
+  const menuOn =
+    !loading && !error && !started && !showMultiplayerLobby && !showIntro
   const pauseOn = !loading && !error && started && paused && !race.finished
   const introOn = showIntro && !started
   const resultsOn = !loading && !error && started && race.finished
@@ -2107,8 +2109,7 @@ export default function App() {
               </div>
             </div>
 
-            {
-}
+            {}
             <div className="no-scrollbar mt-auto border-t border-white/10 max-w-[300px]">
               {(
                 [
@@ -2141,7 +2142,10 @@ export default function App() {
                   </span>
                 </div>
               ))}
-              <div data-pause-row className="py-2 text-center text-[12px] text-gray-500">
+              <div
+                data-pause-row
+                className="py-2 text-center text-[12px] text-gray-500"
+              >
                 press P to keep driving
               </div>
             </div>
@@ -2153,9 +2157,7 @@ export default function App() {
           open={loading}
           className="absolute inset-0 flex items-center justify-center bg-[#0b0e14] text-white"
           from={{ autoAlpha: 0 }}
-          stagger={[
-            { selector: "[data-load]", from: { autoAlpha: 0, y: 16 } },
-          ]}
+          stagger={[{ selector: "[data-load]", from: { autoAlpha: 0, y: 16 } }]}
         >
           <div className="text-center">
             <div className="text-[11px] font-semibold tracking-[0.4em] text-[#8f99a8]">
@@ -2252,10 +2254,7 @@ export default function App() {
               >
                 Enter the garage
               </button>
-              <div
-                data-intro-cta
-                className="text-[12px] text-gray-500"
-              >
+              <div data-intro-cta className="text-[12px] text-gray-500">
                 press any key or click anywhere to continue
               </div>
             </div>

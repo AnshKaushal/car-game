@@ -18,25 +18,35 @@ import {
 } from "../src/mainview/systems/PhysicsSystem"
 import type { DriveInput } from "../src/mainview/systems/InputManager"
 import { CARS } from "../src/mainview/constants/cars"
-import {
-  MIN_PIVOT_FRAC,
-  pivotMatches,
-} from "../src/mainview/systems/CarVisual"
+import { MIN_PIVOT_FRAC, pivotMatches } from "../src/mainview/systems/CarVisual"
 
 const RAPIER = await initPhysics()
 
 const idle: DriveInput = {
-  throttle: 0, brake: 0, steer: 0, handbrake: false,
-  upshiftPressed: false, downshiftPressed: false, toggleModePressed: false,
-  toggleLaunchPressed: false, resetPressed: false, toggleCameraPressed: false,
-  startPressed: false, escapePressed: false,
+  throttle: 0,
+  brake: 0,
+  steer: 0,
+  handbrake: false,
+  upshiftPressed: false,
+  downshiftPressed: false,
+  toggleModePressed: false,
+  toggleLaunchPressed: false,
+  resetPressed: false,
+  toggleCameraPressed: false,
+  startPressed: false,
+  escapePressed: false,
 }
 const W = { ...idle, throttle: 1 }
 
 let fails = 0
 const check = (car: string, name: string, cond: boolean, extra = "") => {
   console.log(
-    (cond ? "PASS" : "FAIL") + " | " + car + " | " + name + (extra ? " | " + extra : ""),
+    (cond ? "PASS" : "FAIL") +
+      " | " +
+      car +
+      " | " +
+      name +
+      (extra ? " | " + extra : ""),
   )
   if (!cond) fails++
 }
@@ -52,7 +62,9 @@ const EXPECT: Record<string, { t100: number; vmax: number }> = {
 for (const def of CARS) {
   // --- visual: exactly 4 pivots (same rule as CarVisual.load) ---
   try {
-    const buf = await Bun.file(`src/mainview/models/${def.modelFile.split("/").pop()}`).arrayBuffer()
+    const buf = await Bun.file(
+      `src/mainview/models/${def.modelFile.split("/").pop()}`,
+    ).arrayBuffer()
     const glb: any = await new GLTFLoader().parseAsync(buf, "")
     const model = glb.scene
     const box = new THREE.Box3().setFromObject(model)
@@ -62,7 +74,11 @@ for (const def of CARS) {
     const pivotSize = new THREE.Vector3()
     let pivots = 0
     model.traverse((o: any) => {
-      if (!o.isMesh && o.children.length > 0 && pivotMatches(o.name, def.pivots)) {
+      if (
+        !o.isMesh &&
+        o.children.length > 0 &&
+        pivotMatches(o.name, def.pivots)
+      ) {
         pivotBox.setFromObject(o)
         pivotBox.getSize(pivotSize)
         if (
@@ -84,7 +100,9 @@ for (const def of CARS) {
   world.timestep = FIXED_DT
   const gb = world.createRigidBody(RAPIER.RigidBodyDesc.fixed())
   world.createCollider(
-    RAPIER.ColliderDesc.cuboid(3000, 0.5, 3000).setTranslation(0, -0.55, 0).setFriction(1.0),
+    RAPIER.ColliderDesc.cuboid(3000, 0.5, 3000)
+      .setTranslation(0, -0.55, 0)
+      .setFriction(1.0),
     gb,
   )
   const body = createChassisBody(
@@ -151,12 +169,28 @@ for (const def of CARS) {
     if (top * 3.6 - before * 3.6 < 1.5 && top > 10) plateau = true
   }
   const topKmh = top * 3.6
-  const finite = Number.isFinite(topKmh) && Number.isFinite(body.translation().y)
+  const finite =
+    Number.isFinite(topKmh) && Number.isFinite(body.translation().y)
   const alive = body.translation().y > -1
-  check(def.id, "44 s WOT stays sane", finite && alive, `top=${topKmh.toFixed(0)} km/h`)
+  check(
+    def.id,
+    "44 s WOT stays sane",
+    finite && alive,
+    `top=${topKmh.toFixed(0)} km/h`,
+  )
   const exp = EXPECT[def.id] ?? { t100: 8, vmax: 180 }
-  check(def.id, `0-100 under ${exp.t100}s`, t100 > 0 && t100 < exp.t100, `t100=${t100.toFixed(2)}s`)
-  check(def.id, `top speed > ${exp.vmax} km/h`, topKmh > exp.vmax, `top=${topKmh.toFixed(0)} km/h`)
+  check(
+    def.id,
+    `0-100 under ${exp.t100}s`,
+    t100 > 0 && t100 < exp.t100,
+    `t100=${t100.toFixed(2)}s`,
+  )
+  check(
+    def.id,
+    `top speed > ${exp.vmax} km/h`,
+    topKmh > exp.vmax,
+    `top=${topKmh.toFixed(0)} km/h`,
+  )
   check(def.id, "gearbox walks up", t.gear >= 3, `gear=${t.gearLabel}`)
 
   // lift-off coast: foot off at 150, 6 s of idle. Must shed speed

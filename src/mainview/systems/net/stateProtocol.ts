@@ -1,4 +1,3 @@
-
 const POS_ABS_MAX = 100_000
 const VEL_COMP_MAX = 150
 const STEER_MAX = 2.0
@@ -37,8 +36,7 @@ export interface ValidatedState {
 }
 
 export type ValidateFailure =
-  | { ok: false; reason: string }
-  | { ok: true; state: ValidatedState }
+  { ok: false; reason: string } | { ok: true; state: ValidatedState }
 
 function isFiniteNum(v: unknown): v is number {
   return typeof v === "number" && Number.isFinite(v)
@@ -50,19 +48,31 @@ export function validateStatePacket(pkt: unknown): ValidateFailure {
   }
   const p = pkt as Record<string, unknown>
 
-  if (typeof p["id"] !== "string" || p["id"].length === 0 || p["id"].length > 128) {
+  if (
+    typeof p["id"] !== "string" ||
+    p["id"].length === 0 ||
+    p["id"].length > 128
+  ) {
     return { ok: false, reason: "bad-id" }
   }
   if (!isFiniteNum(p["t"])) {
     return { ok: false, reason: "bad-t" }
   }
-  if (!Number.isInteger(p["seq"]) || (p["seq"] as number) < 0 || (p["seq"] as number) > Number.MAX_SAFE_INTEGER) {
+  if (
+    !Number.isInteger(p["seq"]) ||
+    (p["seq"] as number) < 0 ||
+    (p["seq"] as number) > Number.MAX_SAFE_INTEGER
+  ) {
     return { ok: false, reason: "bad-seq" }
   }
   const sessRaw = p["sess"]
   let sess: string | null = null
   if (sessRaw !== undefined) {
-    if (typeof sessRaw !== "string" || sessRaw.length === 0 || sessRaw.length > 64) {
+    if (
+      typeof sessRaw !== "string" ||
+      sessRaw.length === 0 ||
+      sessRaw.length > 64
+    ) {
       return { ok: false, reason: "bad-sess" }
     }
     sess = sessRaw
@@ -79,7 +89,12 @@ export function validateStatePacket(pkt: unknown): ValidateFailure {
   const qy = p["qy"]
   const qz = p["qz"]
   const qw = p["qw"]
-  if (!isFiniteNum(qx) || !isFiniteNum(qy) || !isFiniteNum(qz) || !isFiniteNum(qw)) {
+  if (
+    !isFiniteNum(qx) ||
+    !isFiniteNum(qy) ||
+    !isFiniteNum(qz) ||
+    !isFiniteNum(qw)
+  ) {
     return { ok: false, reason: "bad-quat" }
   }
   const normSq = qx * qx + qy * qy + qz * qz + qw * qw
@@ -98,19 +113,34 @@ export function validateStatePacket(pkt: unknown): ValidateFailure {
   if (!isFiniteNum(p["steer"]) || Math.abs(p["steer"] as number) > STEER_MAX) {
     return { ok: false, reason: "bad-steer" }
   }
-  if (!isFiniteNum(p["speed"]) || Math.abs(p["speed"] as number) > SPEED_ABS_MAX) {
+  if (
+    !isFiniteNum(p["speed"]) ||
+    Math.abs(p["speed"] as number) > SPEED_ABS_MAX
+  ) {
     return { ok: false, reason: "bad-speed" }
   }
-  if (!isFiniteNum(p["rpm"]) || (p["rpm"] as number) < RPM_MIN || (p["rpm"] as number) > RPM_MAX) {
+  if (
+    !isFiniteNum(p["rpm"]) ||
+    (p["rpm"] as number) < RPM_MIN ||
+    (p["rpm"] as number) > RPM_MAX
+  ) {
     return { ok: false, reason: "bad-rpm" }
   }
-  if (!Number.isInteger(p["gear"]) || (p["gear"] as number) < GEAR_MIN || (p["gear"] as number) > GEAR_MAX) {
+  if (
+    !Number.isInteger(p["gear"]) ||
+    (p["gear"] as number) < GEAR_MIN ||
+    (p["gear"] as number) > GEAR_MAX
+  ) {
     return { ok: false, reason: "bad-gear" }
   }
   if (typeof p["drift"] !== "boolean" || typeof p["smoke"] !== "boolean") {
     return { ok: false, reason: "bad-flags" }
   }
-  if (!isFiniteNum(p["progress"]) || (p["progress"] as number) < PROGRESS_MIN || (p["progress"] as number) > PROGRESS_MAX) {
+  if (
+    !isFiniteNum(p["progress"]) ||
+    (p["progress"] as number) < PROGRESS_MIN ||
+    (p["progress"] as number) > PROGRESS_MAX
+  ) {
     return { ok: false, reason: "bad-progress" }
   }
 
@@ -187,7 +217,8 @@ export class PeerSessionTracker {
   }
 
   noteSession(peerId: string, sess: unknown): void {
-    if (typeof sess !== "string" || sess.length === 0 || sess.length > 64) return
+    if (typeof sess !== "string" || sess.length === 0 || sess.length > 64)
+      return
     const e = this.entries.get(peerId)
     if (!e) {
       this.entries.set(peerId, { sess, lastSeq: -1 })

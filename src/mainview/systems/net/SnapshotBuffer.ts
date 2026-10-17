@@ -1,4 +1,3 @@
-
 export interface SnapshotIn {
   x: number
   y: number
@@ -38,9 +37,16 @@ export const SNAPSHOT_CAP = 32
 
 export function newInterpTarget(): InterpTarget {
   return {
-    x: 0, y: 0.72, z: 0,
-    qx: 0, qy: 0, qz: 0, qw: 1,
-    vx: 0, vy: 0, vz: 0,
+    x: 0,
+    y: 0.72,
+    z: 0,
+    qx: 0,
+    qy: 0,
+    qz: 0,
+    qw: 1,
+    vx: 0,
+    vy: 0,
+    vz: 0,
   }
 }
 
@@ -58,8 +64,14 @@ function copySnap(s: Snapshot, out: InterpTarget): void {
 }
 
 export function slerpQuat(
-  ax: number, ay: number, az: number, aw: number,
-  bx: number, by: number, bz: number, bw: number,
+  ax: number,
+  ay: number,
+  az: number,
+  aw: number,
+  bx: number,
+  by: number,
+  bz: number,
+  bw: number,
   t: number,
   out: { x: number; y: number; z: number; w: number },
 ): void {
@@ -123,9 +135,16 @@ export class SnapshotBuffer {
 
   append(s: SnapshotIn, arrivalMs: number, seq: number): void {
     this.snaps.push({
-      x: s.x, y: s.y, z: s.z,
-      qx: s.qx, qy: s.qy, qz: s.qz, qw: s.qw,
-      vx: s.vx, vy: s.vy, vz: s.vz,
+      x: s.x,
+      y: s.y,
+      z: s.z,
+      qx: s.qx,
+      qy: s.qy,
+      qz: s.qz,
+      qw: s.qw,
+      vx: s.vx,
+      vy: s.vy,
+      vz: s.vz,
       arrivalMs,
       seq,
     })
@@ -142,7 +161,11 @@ export class SnapshotBuffer {
     this.snaps.length = 0
   }
 
-  sampleInto(out: InterpTarget, renderTimeMs: number, stats?: SampleStats): InterpMode {
+  sampleInto(
+    out: InterpTarget,
+    renderTimeMs: number,
+    stats?: SampleStats,
+  ): InterpMode {
     const n = this.snaps.length
     if (n === 0) {
       if (stats) {
@@ -163,7 +186,10 @@ export class SnapshotBuffer {
       return "hold"
     }
     if (renderTimeMs >= newest.arrivalMs) {
-      const overMs = Math.max(0, Math.min(EXTRAP_MAX_MS, renderTimeMs - newest.arrivalMs))
+      const overMs = Math.max(
+        0,
+        Math.min(EXTRAP_MAX_MS, renderTimeMs - newest.arrivalMs),
+      )
       const dt = overMs / 1000
       out.x = newest.x + newest.vx * dt
       out.y = newest.y + newest.vy * dt

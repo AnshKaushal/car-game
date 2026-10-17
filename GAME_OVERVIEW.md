@@ -21,8 +21,8 @@ adding content.
 
 - Endless deterministic highway (sum-of-sines curvature, no banking, no
   elevation).
-- Flat infinite physics ground; the *visual* road is a ribbon mesh that curves
-  over a *flat* physics plane.
+- Flat infinite physics ground; the _visual_ road is a ribbon mesh that curves
+  over a _flat_ physics plane.
 - Full drivetrain simulation: torque curve, 8-speed auto/manual box with
   torque converter, launch control, rev limiter with fuel cut.
 - Handling model: raycast suspension, per-wheel tire forces, friction ellipse,
@@ -33,14 +33,14 @@ adding content.
 
 ### Stack
 
-| Layer | Choice |
-| --- | --- |
-| Shell | Electrobun / Hutch (`hutch run dev`, `dev:hmr`, `build:canary`) |
-| UI | React 18 + Tailwind v4 (Vite plugin) |
-| 3D | three.js `^0.186.1` |
-| Physics | `@dimforge/rapier3d-compat` `^0.21.0` (WASM) |
-| Build | Vite 6, TypeScript 5.7 |
-| Headless tests | Bun-run scripts in `scripts/` |
+| Layer          | Choice                                                          |
+| -------------- | --------------------------------------------------------------- |
+| Shell          | Electrobun / Hutch (`hutch run dev`, `dev:hmr`, `build:canary`) |
+| UI             | React 18 + Tailwind v4 (Vite plugin)                            |
+| 3D             | three.js `^0.186.1`                                             |
+| Physics        | `@dimforge/rapier3d-compat` `^0.21.0` (WASM)                    |
+| Build          | Vite 6, TypeScript 5.7                                          |
+| Headless tests | Bun-run scripts in `scripts/`                                   |
 
 ### File map
 
@@ -89,7 +89,7 @@ recovery.
    themselves at 60 fps via direct DOM writes).
 
 **Critical invariant:** the render loop and `CarController.update` clamp `dt` to
-the *same* `maxFrameDt`. If the loop advanced the world further than the tire
+the _same_ `maxFrameDt`. If the loop advanced the world further than the tire
 forces were integrated for, grip would silently drop exactly when the frame rate
 dips. `CarController.ts:141-145` and `App.tsx:309-314` both document this.
 
@@ -118,26 +118,26 @@ imports `CAR_PHYSICS` directly.
 
 ### 3.1 Dimensions & mass
 
-| Key | Value | Note |
-| --- | --- | --- |
-| `dimensions.width` | 1.85 m | |
-| `dimensions.height` | 1.43 m | |
-| `dimensions.length` | 4.71 m | drives `CarVisual` auto-scale |
-| `dimensions.wheelbase` | 2.85 m | **not read by code** — hardcoded `2.85` in the grip cap |
-| `dimensions.trackWidth` | 1.58 m | **not read** — hardcoded `±0.76` in `WHEEL_LOCAL` |
-| `dimensions.groundClearance` | 0.12 m | **not read** |
-| `dimensions.centerOfMassHeight` | 0.5 m | **not read** — actual CoM emerges from collider geometry |
-| `mass.chassis` | **1650 kg** | the only mass actually applied (`.setMass()`) |
-| `mass.frontWheel` / `rearWheel` | 25 kg each | **not read** |
-| `mass.total` | 1750 kg | **not read** — only used as documentation |
+| Key                             | Value       | Note                                                     |
+| ------------------------------- | ----------- | -------------------------------------------------------- |
+| `dimensions.width`              | 1.85 m      |                                                          |
+| `dimensions.height`             | 1.43 m      |                                                          |
+| `dimensions.length`             | 4.71 m      | drives `CarVisual` auto-scale                            |
+| `dimensions.wheelbase`          | 2.85 m      | **not read by code** — hardcoded `2.85` in the grip cap  |
+| `dimensions.trackWidth`         | 1.58 m      | **not read** — hardcoded `±0.76` in `WHEEL_LOCAL`        |
+| `dimensions.groundClearance`    | 0.12 m      | **not read**                                             |
+| `dimensions.centerOfMassHeight` | 0.5 m       | **not read** — actual CoM emerges from collider geometry |
+| `mass.chassis`                  | **1650 kg** | the only mass actually applied (`.setMass()`)            |
+| `mass.frontWheel` / `rearWheel` | 25 kg each  | **not read**                                             |
+| `mass.total`                    | 1750 kg     | **not read** — only used as documentation                |
 
 Effective vehicle mass is therefore **1650 kg**, not 1750. All derived numbers
 below use 1650.
 
 ### 3.2 Engine — `engine`
 
-- `maxPowerHP: 800` *(informational; the curve actually peaks at 829 hp — see
-  below. Slight inconsistency.)*
+- `maxPowerHP: 800` _(informational; the curve actually peaks at 829 hp — see
+  below. Slight inconsistency.)_
 - `maxTorqueNm: 1000`
 - `maxPowerRPM: 7200`, `maxTorqueRPM: 3500`, `redlineRPM: 7500`,
   `revLimiterRPM: 7500`, `idleRPM: 800`
@@ -149,19 +149,19 @@ below use 1650.
 **Torque curve** — `[[rpm, multiplier], ...]`, linearly interpolated by
 `torqueMult()`. Engine torque = `1000 Nm × multiplier × throttle`.
 
-| rpm | mult | torque | power (T·rpm/7120) |
-| --- | --- | --- | --- |
-| 0 | 0.30 | 300 | 0 |
-| 800 | 0.42 | 420 | 47 |
-| 1500 | 0.62 | 620 | 131 |
-| 2500 | 0.85 | 850 | 298 |
-| **3500** | **1.00** | **1000** | 492 |
-| 4500 | 0.97 | 970 | 613 |
-| 5500 | 0.93 | 930 | 718 |
-| 6500 | 0.88 | 880 | 803 |
-| **7200** | 0.82 | 820 | **829 (peak)** |
-| 7500 | 0.55 | 550 | 579 |
-| 7700 | 0.00 | 0 | limiter cut zone |
+| rpm      | mult     | torque   | power (T·rpm/7120) |
+| -------- | -------- | -------- | ------------------ |
+| 0        | 0.30     | 300      | 0                  |
+| 800      | 0.42     | 420      | 47                 |
+| 1500     | 0.62     | 620      | 131                |
+| 2500     | 0.85     | 850      | 298                |
+| **3500** | **1.00** | **1000** | 492                |
+| 4500     | 0.97     | 970      | 613                |
+| 5500     | 0.93     | 930      | 718                |
+| 6500     | 0.88     | 880      | 803                |
+| **7200** | 0.82     | 820      | **829 (peak)**     |
+| 7500     | 0.55     | 550      | 579                |
+| 7700     | 0.00     | 0        | limiter cut zone   |
 
 The shape is deliberate: the multiplier decays slowly past peak torque so power
 keeps climbing until 7200, then falls off a cliff. Above idle the falloff is
@@ -186,16 +186,16 @@ driveTorquePerRear = engineTorque × gearRatio × 0.85 × tcMult × dir / 2   [R
 ZF 8HP-style torque-converter 8-speed. Gear ratios **and the road speed they
 produce at the 7200 rpm upshift point** (final drive 3.15, wheel radius 0.33 m):
 
-| Gear | Ratio | Total | Speed @7200 rpm |
-| --- | --- | --- | --- |
-| 1 | 4.71 | 14.84 | **60 km/h** |
-| 2 | 3.14 | 9.89 | 91 km/h |
-| 3 | 2.10 | 6.62 | 135 km/h |
-| 4 | 1.67 | 5.26 | 170 km/h |
-| 5 | 1.29 | 4.06 | 220 km/h |
-| 6 | 1.00 | 3.15 | 284 km/h |
-| 7 | 0.84 | 2.65 | 339 km/h |
-| 8 | 0.67 | 2.11 | **424 km/h** (441 at limiter) |
+| Gear | Ratio | Total | Speed @7200 rpm               |
+| ---- | ----- | ----- | ----------------------------- |
+| 1    | 4.71  | 14.84 | **60 km/h**                   |
+| 2    | 3.14  | 9.89  | 91 km/h                       |
+| 3    | 2.10  | 6.62  | 135 km/h                      |
+| 4    | 1.67  | 5.26  | 170 km/h                      |
+| 5    | 1.29  | 4.06  | 220 km/h                      |
+| 6    | 1.00  | 3.15  | 284 km/h                      |
+| 7    | 0.84  | 2.65  | 339 km/h                      |
+| 8    | 0.67  | 2.11  | **424 km/h** (441 at limiter) |
 
 That 424 km/h gearing ceiling is why the speedo dial is scaled to 340 km/h — 7th
 tops the gauge, 8th goes past it.
@@ -234,12 +234,12 @@ Geometry: `radius: 0.33 m` (~19"), `width: 0.265 m`.
 **Hardpoints** (`WHEEL_LOCAL`, `CarController.ts:62-69`) — measured from the GLB,
 not from `dimensions`:
 
-| Wheel | x | z | Driven |
-| --- | --- | --- | --- |
-| FL | −0.76 | −1.51 | no |
-| FR | +0.76 | −1.51 | no |
-| RL | −0.76 | +1.31 | **yes** |
-| RR | +0.76 | +1.31 | **yes** |
+| Wheel | x     | z     | Driven  |
+| ----- | ----- | ----- | ------- |
+| FL    | −0.76 | −1.51 | no      |
+| FR    | +0.76 | −1.51 | no      |
+| RL    | −0.76 | +1.31 | **yes** |
+| RR    | +0.76 | +1.31 | **yes** |
 
 Physics forward is **−Z**.
 
@@ -264,13 +264,13 @@ curve.
 
 #### Suspension — `wheels.suspension`
 
-| Key | Value | Used? |
-| --- | --- | --- |
-| `springRate` | 55 000 N/m | yes |
-| `damperRate` | 4500 N·s/m | yes |
-| `travel` | 0.12 m | yes (compression clamp) |
-| `targetDampingRatio` | 0.85 | **no** — damping is a raw velocity coefficient |
-| `antiRollBarFront/Rear` | 15 000 / 12 000 Nm/rad | **no** |
+| Key                     | Value                  | Used?                                          |
+| ----------------------- | ---------------------- | ---------------------------------------------- |
+| `springRate`            | 55 000 N/m             | yes                                            |
+| `damperRate`            | 4500 N·s/m             | yes                                            |
+| `travel`                | 0.12 m                 | yes (compression clamp)                        |
+| `targetDampingRatio`    | 0.85                   | **no** — damping is a raw velocity coefficient |
+| `antiRollBarFront/Rear` | 15 000 / 12 000 Nm/rad | **no**                                         |
 
 Raycast rest length is a hardcoded **`REST = 0.915`** with `maxToi = 1.035`
 (`CarController.ts:363-364`). Ray origin is the hardpoint + 0.1 m, direction
@@ -295,14 +295,14 @@ engages in the last 20 mm.
 
 #### Steering — `wheels.steering`
 
-| Key | Value | Used? |
-| --- | --- | --- |
-| `maxAngle` | 0.6 rad (~34°) | yes |
-| `speedSensitivity` | 0.6 | yes |
-| `speedFalloffKmh` | 190 | yes |
-| `minAngleAtSpeed` | 0.05 rad | yes |
-| `ackermannFactor` | 0.3 | **no** — both front wheels get the identical angle |
-| `returnSpeed` | 3.0 rad/s | **no** — a hardcoded `steerRate = 6` rad/s is used |
+| Key                | Value          | Used?                                              |
+| ------------------ | -------------- | -------------------------------------------------- |
+| `maxAngle`         | 0.6 rad (~34°) | yes                                                |
+| `speedSensitivity` | 0.6            | yes                                                |
+| `speedFalloffKmh`  | 190            | yes                                                |
+| `minAngleAtSpeed`  | 0.05 rad       | yes                                                |
+| `ackermannFactor`  | 0.3            | **no** — both front wheels get the identical angle |
+| `returnSpeed`      | 3.0 rad/s      | **no** — a hardcoded `steerRate = 6` rad/s is used |
 
 ### 3.6 Aerodynamics — `aero`
 
@@ -321,14 +321,14 @@ and no aero balance, just extra grip.
 
 ### 3.7 Assists — `assists`
 
-| Key | Value | Effect |
-| --- | --- | --- |
-| `tractionControl` | 0.3 | torque cut from `slipRatioAvg > 0.18` |
-| `stabilityControl` | 0.2 | ESC yaw torque past a slip deadzone |
-| `countersteerAssist` | 4500 | ESC yaw impulse that *follows* opposite lock |
-| `absEnabled` | true | brake pulsation at 90 rad/s |
-| `absSlipThreshold` | 0.15 | **not used** — ABS keys off `vLong` and pedal pressure |
-| `speedFeel.*` | FOV 68→104°, lines, shake | presentation only, never touching the car |
+| Key                  | Value                     | Effect                                                 |
+| -------------------- | ------------------------- | ------------------------------------------------------ |
+| `tractionControl`    | 0.3                       | torque cut from `slipRatioAvg > 0.18`                  |
+| `stabilityControl`   | 0.2                       | ESC yaw torque past a slip deadzone                    |
+| `countersteerAssist` | 4500                      | ESC yaw impulse that _follows_ opposite lock           |
+| `absEnabled`         | true                      | brake pulsation at 90 rad/s                            |
+| `absSlipThreshold`   | 0.15                      | **not used** — ABS keys off `vLong` and pedal pressure |
+| `speedFeel.*`        | FOV 68→104°, lines, shake | presentation only, never touching the car              |
 
 `speedFeel` sub-keys: `fovBase 68`, `fovMax 104`, `fovAtMaxSpeedKmh 330`,
 `linesStrength 0.85`, `linesFromKmh 110`, `shakeAmp 0.0016 rad`,
@@ -336,13 +336,13 @@ and no aero balance, just extra grip.
 
 ### 3.8 Simulation — `simulation`
 
-| Key | Value | Used? |
-| --- | --- | --- |
-| `subSteps` | 8 | **no** |
-| `maxSubStep` | 1/60 | **no** |
-| `maxFrameDt` | **1/30** | **yes — the load-bearing one** |
-| `raycastDistance` | 0.4 | **no** — superseded by `REST = 0.915` |
-| `chassisRaycastDistance` | 0.5 | **no** |
+| Key                      | Value    | Used?                                 |
+| ------------------------ | -------- | ------------------------------------- |
+| `subSteps`               | 8        | **no**                                |
+| `maxSubStep`             | 1/60     | **no**                                |
+| `maxFrameDt`             | **1/30** | **yes — the load-bearing one**        |
+| `raycastDistance`        | 0.4      | **no** — superseded by `REST = 0.915` |
+| `chassisRaycastDistance` | 0.5      | **no**                                |
 
 Actual stepping lives in `PhysicsSystem.stepWorld`: Rapier's `world.timestep`
 is set to **1/120 s** and `stepWorld` runs `clamp(round(dt/h), 1, 6)` sub-steps,
@@ -356,16 +356,19 @@ so the world always advances in exact 1/120 s increments, at most 6 per frame
 Order of operations per frame (all forces are impulses `F × dt`):
 
 ### 4.1 Mode / gear edges
+
 Auto-manual toggle, launch-enable toggle, shift timer countdown, manual
 up/downshift when in manual mode.
 
 ### 4.2 Vehicle-frame quantities
+
 `forwardSpeed` = velocity · body forward. Flattened `fwd`/`right` vectors
 (rotated `−Z` / `+X`, y zeroed). Sideslip angle
 `beta = clamp(latV / max(10, |fwdSpeed|), ±0.4)` — a cheap global estimate used
 only by TC and ESC.
 
 ### 4.3 Parking brake
+
 `parkingBrake` starts **true** at spawn and clears the instant `throttle > 0.3`.
 While engaged it forces ≥ 3000 Nm on **all four** wheels — an automatic P-gear.
 Menu text tells the player this.
@@ -425,8 +428,8 @@ into idle. A full 6 400 rpm blip settles to idle in **~2.5 s** and is visibly
 seen to coast.
 
 > This was previously an **absolute decrement** — a flat `−0.25…−0.8 rpm per
-> frame` — which was not tied to how far the needle still had to travel. From a
-> 6 400 rpm blip it would have taken *hours* to reach idle, so releasing the
+frame` — which was not tied to how far the needle still had to travel. From a
+> 6 400 rpm blip it would have taken _hours_ to reach idle, so releasing the
 > throttle in neutral left the needle pinned high. Decaying the **excess** is the
 > fix: the rate of closure now shrinks with the distance remaining, so it always
 > converges. Fixed in this pass; see §10.
@@ -528,9 +531,11 @@ Applying at ground level on a single rigid body produced violent pitch moments;
 0.5 gives believable squat/dive without endo.
 
 ### 4.10 Aero
+
 Drag and downforce as a single impulse on the CoM (see §3.6).
 
 ### 4.11 Attitude stabilization
+
 A torque impulse, not a real anti-roll bar:
 
 ```
@@ -571,6 +576,7 @@ Two design points stand out and are both called out in comments:
   because 1st/2nd/3rd-gear slides need to re-hook fastest.
 
 ### 4.13 Telemetry smoothing
+
 - `slipRatioAvg` — exponential, `dt × 5`, averaged over 4 wheels (fronts
   contribute 0).
 - `rearSlip` — mean signed rear slip ratio.
@@ -587,7 +593,7 @@ The **painted red band starts at 7 000 rpm** (`RED_FROM_RPM` in `Dashboard.tsx`)
 covering the final 1 000 rpm. The arc, the tick and label colours, the needle
 colour and the numeric readout all switch at that same threshold.
 
-This is deliberately *not* `redlineRPM` (7 500), which is where the ECU actually
+This is deliberately _not_ `redlineRPM` (7 500), which is where the ECU actually
 cuts fuel. On a dial topping out at 8 000, starting the band at 7 500 paints only
 the last 1/16th of the sweep — a sliver that does not read as a redline. Starting
 at 7 000 marks the band the driver is being warned off, and 7 500 still falls
@@ -629,20 +635,20 @@ a given stretch of road looks the same every time you pass it, and they respawn
 
 ## 6. Controls
 
-| Input | Action |
-| --- | --- |
-| `W` / `↑` | Throttle |
-| `S` / `↓` | **Brake in gears ≥1 and N; throttle in R** |
-| `A` `D` / `←` `→` | Steer |
-| `Q` / `E` | Downshift / upshift (manual mode) |
-| `M` | Auto / manual |
-| `L` | Toggle launch control enable |
-| `Space` | Handbrake — **disables TC and ESC entirely** |
-| `R` | Reset car to road center at current `s` |
-| `C` | Toggle chase distance (5.5 m / 4.3 m) |
-| `Enter` | Start |
-| `Esc` | Release mouse |
-| Mouse | Orbit camera; eases back behind the car after 2.5 s |
+| Input             | Action                                              |
+| ----------------- | --------------------------------------------------- |
+| `W` / `↑`         | Throttle                                            |
+| `S` / `↓`         | **Brake in gears ≥1 and N; throttle in R**          |
+| `A` `D` / `←` `→` | Steer                                               |
+| `Q` / `E`         | Downshift / upshift (manual mode)                   |
+| `M`               | Auto / manual                                       |
+| `L`               | Toggle launch control enable                        |
+| `Space`           | Handbrake — **disables TC and ESC entirely**        |
+| `R`               | Reset car to road center at current `s`             |
+| `C`               | Toggle chase distance (5.5 m / 4.3 m)               |
+| `Enter`           | Start                                               |
+| `Esc`             | Release mouse                                       |
+| Mouse             | Orbit camera; eases back behind the car after 2.5 s |
 
 Analog smoothing in `InputManager`: pedals ramp at 6/s toward target; steering at
 4.5/s on attack, 7.0/s on release.
@@ -732,7 +738,7 @@ to `DriveInput` absorbs it) but a leftover.
 1. `src/mainview/constants/physics.ts` — the single source of vehicle truth.
    Anything you want to change about the car's behaviour belongs here (or be
    hardcoded like `muPeak`, `REST`, `steerRate`, `REST` — which is the real
-   problem: the top-level constants file is only *partly* authoritative).
+   problem: the top-level constants file is only _partly_ authoritative).
 2. `CarController.update()` — for changes that need per-wheel or per-frame
    context (assist logic, force blending, torque impulses).
 3. `PhysicsSystem.ts` — body/collider mass, damping, timestep, ground.
@@ -760,7 +766,7 @@ windDown = (0.25 + 0.55 × min(1, excess / 3500)) × dt   // 0.25 … 0.8 rpm/fr
 rpm     -= windDown
 ```
 
-At the 1/120 s timestep that is a maximum of 96 rpm per *second*, independent of
+At the 1/120 s timestep that is a maximum of 96 rpm per _second_, independent of
 how much needle travel remained. Closing a 5 600 rpm gap therefore took ~58
 seconds of sim time — long enough that in practice it read as "the needle is
 stuck". The bug was that the step size did not scale with the distance remaining,
@@ -779,15 +785,15 @@ rpm    = idle + excess × e^(−decay × dt)
 **Verified** headlessly (`gear = 0`, 0.5 s of full throttle from idle, then
 throttle released):
 
-| time after release | rpm |
-| --- | --- |
-| 0.00 s | 6 246 |
-| 0.50 s | 2 558 |
-| 1.00 s | 1 573 |
-| 1.50 s | 1 183 |
-| 2.00 s | 999 |
-| 2.56 s | **< 900 (settled)** |
-| 3.50 s | 831 |
+| time after release | rpm                 |
+| ------------------ | ------------------- |
+| 0.00 s             | 6 246               |
+| 0.50 s             | 2 558               |
+| 1.00 s             | 1 573               |
+| 1.50 s             | 1 183               |
+| 2.00 s             | 999                 |
+| 2.56 s             | **< 900 (settled)** |
+| 3.50 s             | 831                 |
 
 A full blip now settles in ~2.5 s with a visible coast down, instead of never.
 `scripts/drift-matrix.ts` re-run afterwards: **60/60 cases recovered** — the

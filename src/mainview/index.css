@@ -33,7 +33,6 @@
   height: 172px;
 }
 
-
 /* src/mainview/globals.css */
 
 .instrument-hud {
@@ -70,7 +69,9 @@
 .cluster-drift-indicator {
   color: #858b95;
   opacity: 0.3;
-  transition: opacity 120ms ease, color 120ms ease;
+  transition:
+    opacity 120ms ease,
+    color 120ms ease;
 }
 
 /* Toggle this class from your existing drift state. */
@@ -90,11 +91,13 @@
 }
 
 @keyframes cluster-drift-flash {
-  0%, 49% {
+  0%,
+  49% {
     opacity: 1;
     filter: drop-shadow(0 0 4px rgba(255, 201, 40, 0.8));
   }
-  50%, 100% {
+  50%,
+  100% {
     opacity: 0.3;
     filter: none;
   }

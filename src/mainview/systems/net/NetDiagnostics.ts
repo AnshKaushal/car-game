@@ -1,4 +1,3 @@
-
 export interface PeerDiag {
   recv: number
   gaps: number
@@ -367,5 +366,5 @@ export function maybeLogNetDiag() {
 }
 
 try {
-  (window as any).__netDiag = getNetDiagSnapshot
+  ;(window as any).__netDiag = getNetDiagSnapshot
 } catch {}

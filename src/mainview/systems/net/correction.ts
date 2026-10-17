@@ -1,4 +1,3 @@
-
 export type CorrectionMode = "follow" | "contact" | "recover"
 
 export const CORRECTION_ACCEL_MAX = 25
@@ -86,8 +85,12 @@ export class CorrectionState {
 }
 
 export function clampCorrectionDelta(
-  prevX: number, prevY: number, prevZ: number,
-  targetX: number, targetY: number, targetZ: number,
+  prevX: number,
+  prevY: number,
+  prevZ: number,
+  targetX: number,
+  targetY: number,
+  targetZ: number,
   maxDelta: number,
   out: { x: number; y: number; z: number },
 ): number {

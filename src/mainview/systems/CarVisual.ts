@@ -252,7 +252,9 @@ export class CarVisual {
     }
     this.wheels.sort(
       (a, b) =>
-        (a.front ? 0 : 2) + (a.left ? 0 : 1) - ((b.front ? 0 : 2) + (b.left ? 0 : 1)),
+        (a.front ? 0 : 2) +
+        (a.left ? 0 : 1) -
+        ((b.front ? 0 : 2) + (b.left ? 0 : 1)),
     )
     this.mergeStatic()
   }
@@ -339,7 +341,10 @@ export class CarVisual {
         const mat = mesh.material as THREE.Material | THREE.Material[]
         const g = mesh.geometry as THREE.BufferGeometry | undefined
         if (
-          mat && !Array.isArray(mat) && g && g.getAttribute("position") &&
+          mat &&
+          !Array.isArray(mat) &&
+          g &&
+          g.getAttribute("position") &&
           Object.keys(g.morphAttributes ?? {}).length === 0 &&
           !(mat as any).vertexColors
         ) {
@@ -364,7 +369,8 @@ export class CarVisual {
       const prepped: THREE.BufferGeometry[] = []
       for (let i = 0; i < geos.length; i++) {
         const g = geos[i].clone()
-        if (toLocal) g.applyMatrix4(toLocal.clone().multiply(src[i].matrixWorld))
+        if (toLocal)
+          g.applyMatrix4(toLocal.clone().multiply(src[i].matrixWorld))
         else g.applyMatrix4(src[i].matrixWorld)
         const ng = g.index ? g.toNonIndexed() : g
         if (!hasUv) ng.deleteAttribute("uv")
@@ -419,7 +425,8 @@ export class CarVisual {
     return this.tintedMats.length > 0
   }
 
-  wheelContactPositions(    includeFront: boolean,
+  wheelContactPositions(
+    includeFront: boolean,
     out: THREE.Vector3[],
   ): THREE.Vector3[] {
     out.length = 0
@@ -453,7 +460,11 @@ export class CarVisual {
   ) {
     this.group.quaternion.set(rot.x, rot.y, rot.z, rot.w)
     _poseOff.set(0, -0.72, 0).applyQuaternion(this.group.quaternion)
-    this.group.position.set(pos.x + _poseOff.x, pos.y + _poseOff.y, pos.z + _poseOff.z)
+    this.group.position.set(
+      pos.x + _poseOff.x,
+      pos.y + _poseOff.y,
+      pos.z + _poseOff.z,
+    )
 
     for (let i = 0; i < this.wheels.length; i++) {
       const w = this.wheels[i]
@@ -464,8 +475,7 @@ export class CarVisual {
       if (compressions && i < compressions.length) {
         const c = compressions[i] ?? SUSP_VISUAL_REF
         pivot.position.y =
-          w.baseY +
-          Math.max(-0.06, Math.min(0.18, c - SUSP_VISUAL_REF))
+          w.baseY + Math.max(-0.06, Math.min(0.18, c - SUSP_VISUAL_REF))
       }
     }
   }

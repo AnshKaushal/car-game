@@ -182,9 +182,31 @@ interface Hill {
   body?: RAPIER.RigidBody
 }
 
-const TREE_NODES  = ["ARVORE_SEM", "Branches01", "Componen12", "Group23", "Group27", "Group4", "Group5", "Group6",
-  "skp3703_1", "skp4847_1", "skp5771_1", "skp665F1", "skp7EEA1", "skp7EEA_1_", "skpC133_1", "skpEFB7_1"]
-const CLOUD_NODES = ["NUVEM1", "NUVEM_0201", "NUVEM_02_1", "NUVEM_1_1", "NUVEM_2_1"]
+const TREE_NODES = [
+  "ARVORE_SEM",
+  "Branches01",
+  "Componen12",
+  "Group23",
+  "Group27",
+  "Group4",
+  "Group5",
+  "Group6",
+  "skp3703_1",
+  "skp4847_1",
+  "skp5771_1",
+  "skp665F1",
+  "skp7EEA1",
+  "skp7EEA_1_",
+  "skpC133_1",
+  "skpEFB7_1",
+]
+const CLOUD_NODES = [
+  "NUVEM1",
+  "NUVEM_0201",
+  "NUVEM_02_1",
+  "NUVEM_1_1",
+  "NUVEM_2_1",
+]
 
 export class WorldManager {
   group = new THREE.Group()
@@ -370,7 +392,9 @@ export class WorldManager {
 
     let glbRoot: THREE.Object3D | null = null
     try {
-      const glb = await this.loader.loadAsync(`${baseUrl}models/low_poly_tree_pack.glb`)
+      const glb = await this.loader.loadAsync(
+        `${baseUrl}models/low_poly_tree_pack.glb`,
+      )
       glbRoot = glb.scene
       glbRoot.updateMatrixWorld(true)
     } catch (e) {
@@ -392,7 +416,10 @@ export class WorldManager {
       ) => {
         for (const name of names) {
           const node = nodeByName.get(name)
-          if (!node) { console.warn(`prop node not found: ${name}`); continue }
+          if (!node) {
+            console.warn(`prop node not found: ${name}`)
+            continue
+          }
           node.updateMatrixWorld(true)
           const im = bakeInstanced(node, maxInstances, targetH, opts)
           if (im) {
@@ -410,7 +437,7 @@ export class WorldManager {
         }
       }
 
-      buildVariant("tree",  TREE_NODES,  6.5,  150)
+      buildVariant("tree", TREE_NODES, 6.5, 150)
       buildVariant("cloud", CLOUD_NODES, 14.0, this.NUM_CLOUDS)
 
       const bakeNodes = (names: string[]): THREE.Group | null => {
@@ -418,8 +445,10 @@ export class WorldManager {
         let found = false
         for (const nm of names) {
           const n = nodeByName.get(nm)
-          if (n) { g.add(n.clone()); found = true }
-          else console.warn(`prop node not found: ${nm}`)
+          if (n) {
+            g.add(n.clone())
+            found = true
+          } else console.warn(`prop node not found: ${nm}`)
         }
         if (!found) return null
         g.updateMatrixWorld(true)
@@ -454,7 +483,11 @@ export class WorldManager {
         grassIM.receiveShadow = true
         grassIM.frustumCulled = false
         this.group.add(grassIM)
-        this.propVariants.push({ im: grassIM, category: "grass", targetH: 0.3 })
+        this.propVariants.push({
+          im: grassIM,
+          category: "grass",
+          targetH: 0.3,
+        })
       }
       const g111 = bakeNodes(["Object_111"])
       if (g111) {
@@ -469,7 +502,9 @@ export class WorldManager {
       if (log) {
         pushIM(
           bakeInstanced(log, 100, 0, { uniformScale: 0.006 }),
-          "log", 0.4, true,
+          "log",
+          0.4,
+          true,
         )
       }
     } else {
@@ -549,7 +584,7 @@ export class WorldManager {
   private updateClouds(carS: number, carPos: THREE.Vector3) {
     if (this.cloudVariants.length === 0) return
     const behindZ = -(carS - 600)
-    const aheadZ  = -(carS - 2000)
+    const aheadZ = -(carS - 2000)
     let dirty = false
     for (let i = 0; i < this.cloudEntries.length; i++) {
       const c = this.cloudEntries[i]
@@ -570,7 +605,6 @@ export class WorldManager {
     }
   }
 
-
   createPhysicsGround(R: typeof RAPIER, world: RAPIER.World) {
     const g = R.RigidBodyDesc.fixed()
     const body = world.createRigidBody(g)
@@ -589,7 +623,9 @@ export class WorldManager {
       const hidx = hg.getIndex()!
       const indices = new Uint32Array(hidx.array as Uint32Array)
       world.createCollider(
-        R.ColliderDesc.trimesh(verts, indices).setFriction(0.9).setRestitution(0),
+        R.ColliderDesc.trimesh(verts, indices)
+          .setFriction(0.9)
+          .setRestitution(0),
         hb,
       )
       hill.body = hb
@@ -654,8 +690,7 @@ export class WorldManager {
     const side = this.rand(seg * 71 + 5) > 0.5 ? 1 : -1
     const far = hill.radius > 90
     const clearance = hill.radius * 1.4 + 12
-    const lateral =
-      clearance + this.rand(seg * 131 + 29) * (far ? 450 : 130)
+    const lateral = clearance + this.rand(seg * 131 + 29) * (far ? 450 : 130)
     const nx = cx + side * lateral
     const nz = -(sMid + (this.rand(seg * 17 + 3) - 0.5) * this.segLen)
     const dx = nx - this.carPos.x
@@ -669,22 +704,36 @@ export class WorldManager {
 
   private hillNoise(seed: number, x: number, z: number): number {
     const h2 = (ix: number, iz: number) => {
-      let h = Math.imul(seed + Math.imul(ix, 374761393) + Math.imul(iz, 668265263), 1274126177)
+      let h = Math.imul(
+        seed + Math.imul(ix, 374761393) + Math.imul(iz, 668265263),
+        1274126177,
+      )
       h ^= h >>> 13
       return (((h ^ (h >>> 16)) >>> 0) / 4294967296) * 2 - 1
     }
     const smooth = (t: number) => t * t * (3 - 2 * t)
     const oct = (fx: number, fz: number) => {
-      const ix = Math.floor(fx), iz = Math.floor(fz)
-      const tx = smooth(fx - ix), tz = smooth(fz - iz)
-      const a = h2(ix, iz), b = h2(ix + 1, iz)
-      const c = h2(ix, iz + 1), d = h2(ix + 1, iz + 1)
+      const ix = Math.floor(fx),
+        iz = Math.floor(fz)
+      const tx = smooth(fx - ix),
+        tz = smooth(fz - iz)
+      const a = h2(ix, iz),
+        b = h2(ix + 1, iz)
+      const c = h2(ix, iz + 1),
+        d = h2(ix + 1, iz + 1)
       return a + (b - a) * tx + (c - a) * tz + (a - b - c + d) * tx * tz
     }
-    return oct(x * 0.02, z * 0.02) * 0.65 + oct(x * 0.06 + 13.7, z * 0.06 + 7.1) * 0.35
+    return (
+      oct(x * 0.02, z * 0.02) * 0.65 +
+      oct(x * 0.06 + 13.7, z * 0.06 + 7.1) * 0.35
+    )
   }
 
-  private makeHillGeometry(radius: number, height: number, seed: number): THREE.BufferGeometry {
+  private makeHillGeometry(
+    radius: number,
+    height: number,
+    seed: number,
+  ): THREE.BufferGeometry {
     const NR = 12
     const NS = 36
     const positions: number[] = []
@@ -718,8 +767,13 @@ export class WorldManager {
         const rr = radius * rho * apron * (1 + 0.22 * n * env)
         const h = Math.max(0, height * prof + n * height * 0.1 * env)
         positions.push(dx * rr, h, dz * rr)
-        const rockiness = Math.min(1, Math.max(0, (prof - 0.35) * 1.5 + Math.max(0, n) * 0.3))
-        c.copy(green).lerp(dark, Math.max(0, -n) * 0.5).lerp(rock, rockiness)
+        const rockiness = Math.min(
+          1,
+          Math.max(0, (prof - 0.35) * 1.5 + Math.max(0, n) * 0.3),
+        )
+        c.copy(green)
+          .lerp(dark, Math.max(0, -n) * 0.5)
+          .lerp(rock, rockiness)
         if (height > 60) {
           const t = Math.min(1, Math.max(0, (h / height - 0.62) / 0.2))
           const s = t * t * (3 - 2 * t)
@@ -728,7 +782,8 @@ export class WorldManager {
         colors.push(c.r, c.g, c.b)
       }
     }
-    const ring = (i: number, j: number) => 1 + (i - 1) * NS + ((j % NS + NS) % NS)
+    const ring = (i: number, j: number) =>
+      1 + (i - 1) * NS + (((j % NS) + NS) % NS)
     for (let j = 0; j < NS; j++) index.push(0, ring(1, j + 1), ring(1, j))
     for (let i = 1; i < NR; i++) {
       for (let j = 0; j < NS; j++) {
@@ -737,8 +792,14 @@ export class WorldManager {
       }
     }
     const geo = new THREE.BufferGeometry()
-    geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(positions), 3))
-    geo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(colors), 3))
+    geo.setAttribute(
+      "position",
+      new THREE.BufferAttribute(new Float32Array(positions), 3),
+    )
+    geo.setAttribute(
+      "color",
+      new THREE.BufferAttribute(new Float32Array(colors), 3),
+    )
     geo.setIndex(index)
     geo.computeVertexNormals()
     return geo
@@ -755,7 +816,9 @@ export class WorldManager {
     if (!idx) return out
     const triCount = Math.floor(idx.count / 3)
     const areas = new Float32Array(triCount)
-    const a = new THREE.Vector3(), b = new THREE.Vector3(), cc = new THREE.Vector3()
+    const a = new THREE.Vector3(),
+      b = new THREE.Vector3(),
+      cc = new THREE.Vector3()
     let total = 0
     for (let t = 0; t < triCount; t++) {
       a.fromBufferAttribute(posA, idx.getX(t * 3))
@@ -766,7 +829,9 @@ export class WorldManager {
       total += ar
     }
     if (total <= 0) return out
-    const e1 = new THREE.Vector3(), e2 = new THREE.Vector3(), n = new THREE.Vector3()
+    const e1 = new THREE.Vector3(),
+      e2 = new THREE.Vector3(),
+      n = new THREE.Vector3()
     for (let k = 0; k < count; k++) {
       let r = this.rand(seed + k * 101) * total
       let t = 0
@@ -776,8 +841,15 @@ export class WorldManager {
       cc.fromBufferAttribute(posA, idx.getX(t * 3 + 2))
       let u = this.rand(seed + k * 103 + 1)
       let w = this.rand(seed + k * 107 + 2)
-      if (u + w > 1) { u = 1 - u; w = 1 - w }
-      const p = a.clone().multiplyScalar(1 - u - w).addScaledVector(b, u).addScaledVector(cc, w)
+      if (u + w > 1) {
+        u = 1 - u
+        w = 1 - w
+      }
+      const p = a
+        .clone()
+        .multiplyScalar(1 - u - w)
+        .addScaledVector(b, u)
+        .addScaledVector(cc, w)
       e1.copy(b).sub(a)
       e2.copy(cc).sub(a)
       n.copy(e1.cross(e2))
@@ -809,15 +881,27 @@ export class WorldManager {
       let sc: number
       let sink: number
       if (!steep && r < 0.5) {
-        pv = treeVars[Math.floor(this.rand(seed + k * 17) * treeVars.length) % treeVars.length]
+        pv =
+          treeVars[
+            Math.floor(this.rand(seed + k * 17) * treeVars.length) %
+              treeVars.length
+          ]
         sc = 1.6 + this.rand(seed + k * 19) * 1.2
         sink = 0.15
       } else if (r < 0.75 && rockVars.length > 0) {
-        pv = rockVars[Math.floor(this.rand(seed + k * 29) * rockVars.length) % rockVars.length]
+        pv =
+          rockVars[
+            Math.floor(this.rand(seed + k * 29) * rockVars.length) %
+              rockVars.length
+          ]
         sc = 1.2 + this.rand(seed + k * 31) * 1.0
         sink = 0.1
       } else if (grassVars.length > 0) {
-        pv = grassVars[Math.floor(this.rand(seed + k * 37) * grassVars.length) % grassVars.length]
+        pv =
+          grassVars[
+            Math.floor(this.rand(seed + k * 37) * grassVars.length) %
+              grassVars.length
+          ]
         sc = 1.0 + this.rand(seed + k * 41) * 0.8
         sink = 0.05
       } else {
@@ -843,18 +927,32 @@ export class WorldManager {
     const out: PropEntry[] = []
     if (this.propVariants.length === 0) return out
     const W = WORLD_CONFIG.vegetation
-    const treeIdxs = this.propVariants.map((p, i) => p.category === "tree" ? i : -1).filter(i => i >= 0)
-    const rockIdxs = this.propVariants.map((p, i) => p.category === "rock" ? i : -1).filter(i => i >= 0)
-    const grassIdxs = this.propVariants.map((p, i) => p.category === "grass" ? i : -1).filter(i => i >= 0)
-    const barrelIdxs = this.propVariants.map((p, i) => p.category === "barrel" ? i : -1).filter(i => i >= 0)
-    const logIdxs = this.propVariants.map((p, i) => p.category === "log" ? i : -1).filter(i => i >= 0)
+    const treeIdxs = this.propVariants
+      .map((p, i) => (p.category === "tree" ? i : -1))
+      .filter((i) => i >= 0)
+    const rockIdxs = this.propVariants
+      .map((p, i) => (p.category === "rock" ? i : -1))
+      .filter((i) => i >= 0)
+    const grassIdxs = this.propVariants
+      .map((p, i) => (p.category === "grass" ? i : -1))
+      .filter((i) => i >= 0)
+    const barrelIdxs = this.propVariants
+      .map((p, i) => (p.category === "barrel" ? i : -1))
+      .filter((i) => i >= 0)
+    const logIdxs = this.propVariants
+      .map((p, i) => (p.category === "log" ? i : -1))
+      .filter((i) => i >= 0)
     const s0 = seg * this.segLen
     const ROAD_CLEAR = 9.5
 
     const pushProp = (
-      s: number, seed: number, i: number,
-      minDist: number, maxDist: number,
-      pool: number[], baseScale: number,
+      s: number,
+      seed: number,
+      i: number,
+      minDist: number,
+      maxDist: number,
+      pool: number[],
+      baseScale: number,
       y = 0,
     ) => {
       if (pool.length === 0) return
@@ -864,8 +962,13 @@ export class WorldManager {
         ROAD_CLEAR,
         minDist + this.rand(seed + i * 17) * (maxDist - minDist),
       )
-      const variantIdx = pool[Math.floor(this.rand(seed * 29 + i * 5) * pool.length) % pool.length]
-      const scaleVar = W.scaleRange.min + this.rand(seed * 3 + i * 7) * (W.scaleRange.max - W.scaleRange.min)
+      const variantIdx =
+        pool[
+          Math.floor(this.rand(seed * 29 + i * 5) * pool.length) % pool.length
+        ]
+      const scaleVar =
+        W.scaleRange.min +
+        this.rand(seed * 3 + i * 7) * (W.scaleRange.max - W.scaleRange.min)
       out.push({
         pos: new THREE.Vector3(
           cx + side * dist,
@@ -887,33 +990,58 @@ export class WorldManager {
         let base = 1.4
         let minD: number = W.minDistanceFromRoad
         let maxD: number = W.maxDistanceFromRoad
-        if (roll > 0.75 && rockIdxs.length > 0) { pool = rockIdxs; base = 1.0 }
-        else if (roll > 0.90 && barrelIdxs.length > 0) { pool = barrelIdxs; base = 1.0; minD = 10; maxD = 50 }
-        else if (roll > 0.95 && logIdxs.length > 0) { pool = logIdxs; base = 1.0; minD = 12; maxD = 50 }
-        if (pool.length === 0) { pool = treeIdxs; base = 1.4; minD = W.minDistanceFromRoad; maxD = W.maxDistanceFromRoad }
+        if (roll > 0.75 && rockIdxs.length > 0) {
+          pool = rockIdxs
+          base = 1.0
+        } else if (roll > 0.9 && barrelIdxs.length > 0) {
+          pool = barrelIdxs
+          base = 1.0
+          minD = 10
+          maxD = 50
+        } else if (roll > 0.95 && logIdxs.length > 0) {
+          pool = logIdxs
+          base = 1.0
+          minD = 12
+          maxD = 50
+        }
+        if (pool.length === 0) {
+          pool = treeIdxs
+          base = 1.4
+          minD = W.minDistanceFromRoad
+          maxD = W.maxDistanceFromRoad
+        }
         pushProp(s, seed, i, minD, maxD, pool, base, -0.15)
         if (out.length > 60) return out
       }
     }
 
     if (this.GRASS_ENABLED) {
-    const bands = [
-      { step: 2.0, nMin: 4, nMax: 8, minD: 8, maxD: 45, base: 1.0 },
-      { step: 4, nMin: 3, nMax: 6, minD: 45, maxD: 120, base: 1.6 },
-      { step: 10, nMin: 2, nMax: 4, minD: 120, maxD: 300, base: 2.8 },
-    ]
-    let gi = 0
-    for (const b of bands) {
-      for (let s = s0; s < s0 + this.segLen; s += b.step) {
-        const seed = Math.floor(s * 4) * 13 + seg * 30011 + 777 + gi * 7919
-        const n = b.nMin + Math.floor(this.rand(seed) * (b.nMax - b.nMin + 1))
-        for (let i = 0; i < n; i++) {
-          pushProp(s, seed, i + 1000 + gi * 500, b.minD, b.maxD, grassIdxs, b.base, -0.04)
-          if (out.length > 900) return out
+      const bands = [
+        { step: 2.0, nMin: 4, nMax: 8, minD: 8, maxD: 45, base: 1.0 },
+        { step: 4, nMin: 3, nMax: 6, minD: 45, maxD: 120, base: 1.6 },
+        { step: 10, nMin: 2, nMax: 4, minD: 120, maxD: 300, base: 2.8 },
+      ]
+      let gi = 0
+      for (const b of bands) {
+        for (let s = s0; s < s0 + this.segLen; s += b.step) {
+          const seed = Math.floor(s * 4) * 13 + seg * 30011 + 777 + gi * 7919
+          const n = b.nMin + Math.floor(this.rand(seed) * (b.nMax - b.nMin + 1))
+          for (let i = 0; i < n; i++) {
+            pushProp(
+              s,
+              seed,
+              i + 1000 + gi * 500,
+              b.minD,
+              b.maxD,
+              grassIdxs,
+              b.base,
+              -0.04,
+            )
+            if (out.length > 900) return out
+          }
         }
+        gi++
       }
-      gi++
-    }
     }
     return out
   }
@@ -1070,7 +1198,6 @@ export class WorldManager {
   }
 }
 
-
 function bakeInstanced(
   node: THREE.Object3D,
   maxInstances: number,
@@ -1097,7 +1224,8 @@ function bakeInstanced(
   clone.traverse((o: any) => {
     if (!o.isMesh) return
     const src = o.geometry as THREE.BufferGeometry
-    const pos = src.getAttribute("position") as THREE.BufferAttribute | undefined
+    const pos = src.getAttribute("position") as
+      THREE.BufferAttribute | undefined
     if (!pos || pos.count < 24) return
     src.computeBoundingBox()
     const bb = src.boundingBox!
@@ -1109,7 +1237,9 @@ function bakeInstanced(
     g.translate(-cx, -cbox.min.y, -cz)
     geos.push(g)
     const m = Array.isArray(o.material) ? o.material[0] : o.material
-    mats.push(m ?? new THREE.MeshStandardMaterial({ color: 0x2d5a22, roughness: 1 }))
+    mats.push(
+      m ?? new THREE.MeshStandardMaterial({ color: 0x2d5a22, roughness: 1 }),
+    )
   })
 
   if (geos.length === 0) return null
@@ -1117,7 +1247,10 @@ function bakeInstanced(
   let geo: THREE.BufferGeometry
   let mat: THREE.Material | THREE.Material[]
   if (geos.length > 1) {
-    const merged = mergeGeometries(geos.map(g => g.index ? g.toNonIndexed() : g), true)
+    const merged = mergeGeometries(
+      geos.map((g) => (g.index ? g.toNonIndexed() : g)),
+      true,
+    )
     if (merged) {
       geo = merged
       mat = mats
@@ -1152,9 +1285,11 @@ function bakeSplit(
   clone.traverse((o: any) => {
     if (!o.isMesh) return
     const src = o.geometry as THREE.BufferGeometry
-    const pos = src.getAttribute("position") as THREE.BufferAttribute | undefined
+    const pos = src.getAttribute("position") as
+      THREE.BufferAttribute | undefined
     if (!pos || pos.count < 24) return
-    if (!mat) mat = (Array.isArray(o.material) ? o.material[0] : o.material) ?? null
+    if (!mat)
+      mat = (Array.isArray(o.material) ? o.material[0] : o.material) ?? null
     const g = src.clone().applyMatrix4(o.matrixWorld)
     parts.push(g.index ? g.toNonIndexed() : g)
   })
@@ -1169,7 +1304,8 @@ function bakeSplit(
   const spanX = Math.max(1e-6, bb.max.x - bb.min.x)
 
   const posA = merged.getAttribute("position") as THREE.BufferAttribute
-  const normA = merged.getAttribute("normal") as THREE.BufferAttribute | undefined
+  const normA = merged.getAttribute("normal") as
+    THREE.BufferAttribute | undefined
   const uvA = merged.getAttribute("uv") as THREE.BufferAttribute | undefined
   const triCount = Math.floor(posA.count / 3)
   const bins: number[][] = Array.from({ length: chunks }, () => [])
@@ -1180,7 +1316,10 @@ function bakeSplit(
       .add(new THREE.Vector3().fromBufferAttribute(posA, t * 3 + 1))
       .add(new THREE.Vector3().fromBufferAttribute(posA, t * 3 + 2))
       .multiplyScalar(1 / 3)
-    const b = Math.min(chunks - 1, Math.floor(((cx.x - bb.min.x) / spanX) * chunks))
+    const b = Math.min(
+      chunks - 1,
+      Math.floor(((cx.x - bb.min.x) / spanX) * chunks),
+    )
     bins[b].push(t)
   }
 
@@ -1192,11 +1331,16 @@ function bakeSplit(
     const uArr = uvA ? new Float32Array(n * 2) : null
     let k = 0
     let minY = Infinity
-    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity
+    let minX = Infinity,
+      maxX = -Infinity,
+      minZ = Infinity,
+      maxZ = -Infinity
     for (const t of bin) {
       for (let v = 0; v < 3; v++) {
         const vi = t * 3 + v
-        const x = posA.getX(vi), y = posA.getY(vi), z = posA.getZ(vi)
+        const x = posA.getX(vi),
+          y = posA.getY(vi),
+          z = posA.getZ(vi)
         if (y < minY) minY = y
         if (x < minX) minX = x
         if (x > maxX) maxX = x
@@ -1229,7 +1373,8 @@ function bakeSplit(
     g.setAttribute("position", new THREE.BufferAttribute(pArr, 3))
     if (nArr) g.setAttribute("normal", new THREE.BufferAttribute(nArr, 3))
     if (uArr) g.setAttribute("uv", new THREE.BufferAttribute(uArr, 2))
-    if (opts.uniformScale !== undefined) g.scale(opts.uniformScale, opts.uniformScale, opts.uniformScale)
+    if (opts.uniformScale !== undefined)
+      g.scale(opts.uniformScale, opts.uniformScale, opts.uniformScale)
     else if (opts.targetH !== undefined) {
       g.computeBoundingBox()
       const h = Math.max(1e-6, g.boundingBox!.max.y - g.boundingBox!.min.y)
@@ -1243,4 +1388,3 @@ function bakeSplit(
   }
   return out
 }
-

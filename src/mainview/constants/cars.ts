@@ -6,7 +6,6 @@ import {
 import type { PaintTextureRule } from "../systems/carTint"
 import type { WheelDef } from "../systems/Suspension"
 
-
 export interface CarDashConfig {
   maxRpm: number
   redFromRpm: number

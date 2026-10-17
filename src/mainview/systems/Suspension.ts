@@ -2,7 +2,6 @@ import * as THREE from "three"
 import type * as RAPIER from "@dimforge/rapier3d-compat"
 import { CAR_PHYSICS } from "../constants/physics"
 
-
 export interface WheelDef {
   x: number
   z: number
@@ -129,11 +128,7 @@ export class SuspensionSystem {
         this.body,
       )
 
-      const r = new THREE.Vector3(
-        anchor.x - bodyPos.x,
-        0,
-        anchor.z - bodyPos.z,
-      )
+      const r = new THREE.Vector3(anchor.x - bodyPos.x, 0, anchor.z - bodyPos.z)
       const pointVel = linvel.clone().add(angvel.clone().cross(r))
       st.pointVel.copy(pointVel)
 
@@ -165,8 +160,7 @@ export class SuspensionSystem {
       st.damperF = damperF
       st.arbF = 0
       st.contactY = contact.y
-      const n = (hit as { normal?: { x: number; y: number; z: number } })
-        .normal
+      const n = (hit as { normal?: { x: number; y: number; z: number } }).normal
       if (n) st.contactNormal.set(n.x, n.y, n.z)
       else st.contactNormal.set(0, 1, 0)
     }

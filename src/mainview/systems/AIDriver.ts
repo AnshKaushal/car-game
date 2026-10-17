@@ -261,10 +261,7 @@ export class AIDriver {
           tz += (bestZ - tz) * w
         }
       } else if (Math.abs(bestLat) < 4.5) {
-        const w = Math.min(
-          1,
-          prox * (cruising != null ? ag * 0.4 : ag * 0.8),
-        )
+        const w = Math.min(1, prox * (cruising != null ? ag * 0.4 : ag * 0.8))
         tx += Math.sign(bestLat) * 3.5 * w
       }
     }
@@ -360,7 +357,7 @@ export class AIDriver {
     } else {
       const kappa = Math.max(1e-4, curv / 40)
       const aLat = 38 + ag * 30
-      const vBendKmh = (Math.sqrt(aLat / kappa) * 3.6)
+      const vBendKmh = Math.sqrt(aLat / kappa) * 3.6
       if (speedKmh > vBendKmh) {
         throttleTarget = 0.25
         brakeTarget = clamp((speedKmh - vBendKmh) / 25, 0.25, 1)

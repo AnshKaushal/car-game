@@ -198,8 +198,7 @@ export function MultiplayerLobby({
           </div>
         )}
 
-        {
-}
+        {}
         <div
           data-lobby-grid
           ref={gridRef}
@@ -286,8 +285,7 @@ export function MultiplayerLobby({
                         <ArrowUpRight size={16} />
                       </button>
                     </form>
-                    {
-}
+                    {}
                     <input
                       type="password"
                       value={passwordInput}
@@ -357,7 +355,9 @@ export function MultiplayerLobby({
                   className="border border-[#51a7d5] bg-[#51a7d5]/15 px-3 py-2"
                 >
                   <div className="text-[11px] font-semibold tracking-[0.22em] text-[#8f99a8]">
-                    {netMode === "p2p" ? "SHARE THIS ROOM CODE" : "CONNECTED TO"}
+                    {netMode === "p2p"
+                      ? "SHARE THIS ROOM CODE"
+                      : "CONNECTED TO"}
                   </div>
                   <div className="mt-1 flex items-center justify-between gap-2">
                     <div className="min-w-0 flex-1 truncate font-mono text-[18px] font-bold tracking-[0.12em] text-white">
@@ -388,7 +388,13 @@ export function MultiplayerLobby({
                 {}
                 <div className="border-t border-white/10">
                   {[
-                    { id: "you", name: nameInput || playerName, colorHex: colorHex(carColor), pingMs: 0, isYou: true },
+                    {
+                      id: "you",
+                      name: nameInput || playerName,
+                      colorHex: colorHex(carColor),
+                      pingMs: 0,
+                      isYou: true,
+                    },
                     ...peers.map((p) => ({ ...p, isYou: false })),
                   ].map((row, i) => (
                     <div

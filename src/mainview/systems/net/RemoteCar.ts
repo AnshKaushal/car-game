@@ -149,7 +149,8 @@ export class RemoteCar {
           dims.width / 2,
           0.32 * (dims.height / 1.43),
           dims.length / 2,
-        ).setTranslation(0, -0.1, 0)
+        )
+          .setTranslation(0, -0.1, 0)
           .setMass(mass)
           .setFriction(0.15)
           .setFrictionCombineRule(rapier.CoefficientCombineRule.Min)
@@ -182,7 +183,10 @@ export class RemoteCar {
         scene?.add(visual.group)
       })
       .catch((e) => {
-        console.warn(`[RemoteCar] Failed to load visual model for ${this.name}:`, e)
+        console.warn(
+          `[RemoteCar] Failed to load visual model for ${this.name}:`,
+          e,
+        )
         scene?.add(visual.group)
       })
   }
@@ -261,11 +265,9 @@ export class RemoteCar {
                   support = true
                 }
               }
-            } catch {
-            }
+            } catch {}
           })
-        } catch {
-        }
+        } catch {}
       })
     } catch {
       return
@@ -338,13 +340,13 @@ export class RemoteCar {
         this.lastCorr.x = lv.x - this.targetVel.x * cruiseScale
         this.lastCorr.y = lv.y - this.targetVel.y * cruiseScale
         this.lastCorr.z = lv.z - this.targetVel.z * cruiseScale
-      } catch {
-      }
+      } catch {}
     }
     this.prevCorrMode = this.corr.mode
 
     try {
-      const explained = this.corr.mode !== "follow" && this.errMag < RECOVER_WARP_M
+      const explained =
+        this.corr.mode !== "follow" && this.errMag < RECOVER_WARP_M
       if (distSq > WARP_DIST_SQ && !explained) {
         netDiagSnap(this.id, "warp-threshold", Math.sqrt(distSq))
         this.interp.reset()
@@ -356,7 +358,12 @@ export class RemoteCar {
         this.lastCorr.z = 0
         b.setTranslation({ x: _goal.x, y: _goal.y, z: _goal.z }, true)
         b.setRotation(
-          { x: this.targetQuat.x, y: this.targetQuat.y, z: this.targetQuat.z, w: this.targetQuat.w },
+          {
+            x: this.targetQuat.x,
+            y: this.targetQuat.y,
+            z: this.targetQuat.z,
+            w: this.targetQuat.w,
+          },
           true,
         )
         b.setLinvel({ x: 0, y: 0, z: 0 }, true)
@@ -367,14 +374,16 @@ export class RemoteCar {
       let cx = dx * POS_GAIN
       let cy = dy * POS_GAIN
       let cz = dz * POS_GAIN
-      const corrCap = this.corr.mode === "recover" ? RECOVER_CORR_MAX : CORRECTION_MAX
+      const corrCap =
+        this.corr.mode === "recover" ? RECOVER_CORR_MAX : CORRECTION_MAX
       const chl = Math.sqrt(cx * cx + cz * cz)
       if (chl > corrCap) {
         const s = corrCap / chl
         cx *= s
         cz *= s
       }
-      const vcap = this.corr.mode === "recover" ? RECOVER_CORR_MAX : CORRECTION_MAX
+      const vcap =
+        this.corr.mode === "recover" ? RECOVER_CORR_MAX : CORRECTION_MAX
       const cl = Math.abs(cy)
       if (cl > vcap) {
         cy *= vcap / cl
@@ -395,8 +404,12 @@ export class RemoteCar {
       const py = this.lastCorr.y
       const pz = this.lastCorr.z
       this.corrCmdMag = clampCorrectionDelta(
-        px, py, pz,
-        tx, ty, tz,
+        px,
+        py,
+        pz,
+        tx,
+        ty,
+        tz,
         CORRECTION_ACCEL_MAX * dt,
         this.appliedCorr,
       )
@@ -424,8 +437,7 @@ export class RemoteCar {
         try {
           const lv = b.linvel()
           spd = Math.sqrt(lv.x * lv.x + lv.y * lv.y + lv.z * lv.z)
-        } catch {
-        }
+        } catch {}
         netDiagRemoteSample(this.id, Math.sqrt(distSq), spd, 0, ageS * 1000)
         netDiagCorrection(
           this.id,
@@ -457,9 +469,7 @@ export class RemoteCar {
         _qe.z = -_qe.z
         _qe.w = -_qe.w
       }
-      const sinHalf = Math.sqrt(
-        Math.max(0, 1 - _qe.w * _qe.w),
-      )
+      const sinHalf = Math.sqrt(Math.max(0, 1 - _qe.w * _qe.w))
       let wMag = 0
       if (contactScale <= 0) {
       } else if (sinHalf > 1e-4) {
@@ -491,8 +501,7 @@ export class RemoteCar {
         this.corr.transitions,
         this.corr.recoverT(now),
       )
-    } catch {
-    }
+    } catch {}
   }
 
   update(dt: number, smokeSystem?: TireSmoke) {
@@ -514,15 +523,14 @@ export class RemoteCar {
 
     const vms = Math.sqrt(bv.x * bv.x + bv.y * bv.y + bv.z * bv.z)
     this.wheelOmega = vms / TIRE_RADIUS
-    const omegas = [this.wheelOmega, this.wheelOmega, this.wheelOmega, this.wheelOmega]
+    const omegas = [
+      this.wheelOmega,
+      this.wheelOmega,
+      this.wheelOmega,
+      this.wheelOmega,
+    ]
 
-    this.visual.syncFromPose(
-      _pos,
-      _quat,
-      this.steerAngle,
-      omegas,
-      dt,
-    )
+    this.visual.syncFromPose(_pos, _quat, this.steerAngle, omegas, dt)
     this.visual.setBrake(this.brakeTarget)
 
     if (smokeSystem && (this.smoke || this.drift) && this.speed > 5) {

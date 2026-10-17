@@ -1,11 +1,7 @@
 import { useEffect, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { HexColorPicker } from "react-colorful"
-import {
-  PAINT_SWATCHES,
-  hexToNumber,
-  numberToHex,
-} from "../systems/carTint"
+import { PAINT_SWATCHES, hexToNumber, numberToHex } from "../systems/carTint"
 
 export function PaintPicker({
   value,
@@ -44,7 +40,7 @@ export function PaintPicker({
       window.removeEventListener("scroll", close, true)
       window.removeEventListener("resize", close)
     }
-  }, [open ])
+  }, [open])
 
   const swatches = showStock
     ? PAINT_SWATCHES
@@ -128,8 +124,7 @@ export function PaintPicker({
         </button>
       </div>
 
-      {
-}
+      {}
       {open &&
         typeof document !== "undefined" &&
         createPortal(

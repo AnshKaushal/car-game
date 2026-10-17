@@ -5,11 +5,7 @@ import type { CarController } from "../CarController"
 import type { CarTelemetry } from "../CarController"
 import type { TireSmoke } from "../TireSmoke"
 import { DEFAULT_PLAYER_COLOR, colorHex } from "../carTint"
-import {
-  DEFAULT_CAR_ID,
-  getCar,
-  modelFileForCarId,
-} from "../../constants/cars"
+import { DEFAULT_CAR_ID, getCar, modelFileForCarId } from "../../constants/cars"
 import { RemoteCar } from "./RemoteCar"
 import {
   maybeLogNetDiag,
@@ -30,11 +26,7 @@ import {
   PeerSessionTracker,
   validateStatePacket,
 } from "./stateProtocol"
-import type {
-  CarStatePacket,
-  NetworkEventPacket,
-  PeerPlayer,
-} from "./types"
+import type { CarStatePacket, NetworkEventPacket, PeerPlayer } from "./types"
 
 const BROADCAST_INTERVAL_MS = 33
 const PING_INTERVAL_MS = 2000
@@ -223,11 +215,20 @@ export class MultiplayerManager {
     const cleanTarget = (target || "").trim()
     if (mode === "p2p") {
       if (!cleanTarget) {
-        this.failJoin("P2P", new Error("enter a room code or create a new room"))
+        this.failJoin(
+          "P2P",
+          new Error("enter a room code or create a new room"),
+        )
         return false
       }
-      if (this.mode === "p2p" && this.roomId === cleanTarget && this.roomPasswordHashV === passHash) {
-        console.log(`[Multiplayer P2P] Already in room "${cleanTarget}" — ignoring duplicate join`)
+      if (
+        this.mode === "p2p" &&
+        this.roomId === cleanTarget &&
+        this.roomPasswordHashV === passHash
+      ) {
+        console.log(
+          `[Multiplayer P2P] Already in room "${cleanTarget}" — ignoring duplicate join`,
+        )
         this.applyProfile(playerName, carColor)
         this.notifyPeersChanged()
         return true
@@ -241,7 +242,9 @@ export class MultiplayerManager {
     } else {
       const key = cleanTarget || "localhost:9876"
       if (this.mode === "lan" && this.roomId === key) {
-        console.log(`[Multiplayer LAN] Already connected to "${key}" — ignoring duplicate join`)
+        console.log(
+          `[Multiplayer LAN] Already connected to "${key}" — ignoring duplicate join`,
+        )
         this.applyProfile(playerName, carColor)
         this.notifyPeersChanged()
         return true
@@ -289,7 +292,9 @@ export class MultiplayerManager {
     this.localSession = newSessionId()
 
     this.roomId = roomId
-    console.log(`[Multiplayer P2P] Joining room "${roomId}" as ${this.localName} (${this.localId})`)
+    console.log(
+      `[Multiplayer P2P] Joining room "${roomId}" as ${this.localName} (${this.localId})`,
+    )
 
     this.room = joinRoom(
       {
@@ -312,11 +317,17 @@ export class MultiplayerManager {
       })
     }
 
-    stateAction.onMessage = (pkt: CarStatePacket, { peerId }: { peerId: string }) => {
+    stateAction.onMessage = (
+      pkt: CarStatePacket,
+      { peerId }: { peerId: string },
+    ) => {
       this.handleStatePacket(pkt, peerId)
     }
 
-    eventAction.onMessage = (evt: NetworkEventPacket, { peerId }: { peerId: string }) => {
+    eventAction.onMessage = (
+      evt: NetworkEventPacket,
+      { peerId }: { peerId: string },
+    ) => {
       this.handleNetworkEvent(evt, peerId)
     }
 
@@ -469,7 +480,11 @@ export class MultiplayerManager {
       }
       this.peers.set(peerId, peer)
 
-      if (this.activeScene && this.activeWorld && !this.remoteCars.has(peerId)) {
+      if (
+        this.activeScene &&
+        this.activeWorld &&
+        !this.remoteCars.has(peerId)
+      ) {
         const remote = new RemoteCar(
           peerId,
           peer.name,

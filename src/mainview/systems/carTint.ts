@@ -17,7 +17,11 @@ function isPaintMaterial(mat: THREE.Material, meshName: string): boolean {
   if (PAINT_NAMES.test(name)) return true
   const std = mat as THREE.MeshStandardMaterial
   if (!std.color) return false
-  if (std.metalness !== undefined && std.metalness > 0.85 && std.roughness < 0.25)
+  if (
+    std.metalness !== undefined &&
+    std.metalness > 0.85 &&
+    std.roughness < 0.25
+  )
     return false
   const c = std.color
   const max = Math.max(c.r, c.g, c.b)
@@ -70,11 +74,7 @@ function neutralizedMap(
   if (hit) return hit
   if (typeof document === "undefined") return null
   const img = map.image as
-    | HTMLImageElement
-    | HTMLCanvasElement
-    | ImageBitmap
-    | null
-    | undefined
+    HTMLImageElement | HTMLCanvasElement | ImageBitmap | null | undefined
   const w = (img as { width?: number } | null)?.width ?? 0
   const h = (img as { height?: number } | null)?.height ?? 0
   if (!img || !w || !h) return null
@@ -180,26 +180,9 @@ export function tintCar(
 }
 
 export const RIVAL_COLORS = [
-  0xe30613,
-  0x1f6feb,
-  0xf5c518,
-  0x1f8a4c,
-  0xf97316,
-  0xa855f7,
-  0x14b8a6,
-  0xf472b6,
-  0x94a3b8,
-  0x84cc16,
-  0xf8fafc,
-  0x111827,
-  0x0ea5e9,
-  0x92400e,
-  0x7f1d1d,
-  0x14532d,
-  0xe7d8b7,
-  0x334155,
-  0xb45309,
-  0x67e8f9,
+  0xe30613, 0x1f6feb, 0xf5c518, 0x1f8a4c, 0xf97316, 0xa855f7, 0x14b8a6,
+  0xf472b6, 0x94a3b8, 0x84cc16, 0xf8fafc, 0x111827, 0x0ea5e9, 0x92400e,
+  0x7f1d1d, 0x14532d, 0xe7d8b7, 0x334155, 0xb45309, 0x67e8f9,
 ]
 
 export const DEFAULT_PLAYER_COLOR = 0x000000

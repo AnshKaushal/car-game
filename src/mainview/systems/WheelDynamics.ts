@@ -1,4 +1,3 @@
-
 export interface WheelSpinState {
   omega: number
   inertia: number
@@ -19,12 +18,7 @@ export class WheelDynamics {
   readonly wheels: WheelSpinState[] = []
   readonly slipDampRate: number
 
-  constructor(
-    radius: number,
-    inertia: number,
-    slipDampRate = 0,
-    count = 4,
-  ) {
+  constructor(radius: number, inertia: number, slipDampRate = 0, count = 4) {
     this.slipDampRate = slipDampRate
     for (let i = 0; i < count; i++) {
       this.wheels.push({

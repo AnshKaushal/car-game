@@ -11,7 +11,6 @@ import gsap from "gsap"
 
 gsap.ticker.lagSmoothing(0)
 
-
 export const EASE = {
   out: "expo.out",
   soft: "power3.out",
@@ -191,10 +190,18 @@ export function Wipe({
         .set(".wipe-bar", { autoAlpha: 0 })
         .set(".wipe-label", { autoAlpha: 0 })
         .to(".wipe-bar", { autoAlpha: 1, duration: 0.3, ease: EASE.inOut })
-        .to(".wipe-label", { autoAlpha: 1, duration: 0.34, ease: EASE.soft }, "-=0.12")
+        .to(
+          ".wipe-label",
+          { autoAlpha: 1, duration: 0.34, ease: EASE.soft },
+          "-=0.12",
+        )
         .to({}, { duration: 0.34 })
         .to(".wipe-label", { autoAlpha: 0, duration: 0.22 })
-        .to(".wipe-bar", { autoAlpha: 0, duration: 0.36, ease: EASE.inOut }, "-=0.14")
+        .to(
+          ".wipe-bar",
+          { autoAlpha: 0, duration: 0.36, ease: EASE.inOut },
+          "-=0.14",
+        )
         .set(el, { autoAlpha: 0 })
         .set(".wipe-bar, .wipe-label", { clearProps: CLEAN })
     }, el)

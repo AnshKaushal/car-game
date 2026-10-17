@@ -383,7 +383,11 @@ export class CarController {
         )
       }
       if (this.launchArmed) targetRpm = P.transmission.launchControlRPM
-      if (input.throttle > 0.1 && this.gear >= 1 && this.wasAirborneLastStep()) {
+      if (
+        input.throttle > 0.1 &&
+        this.gear >= 1 &&
+        this.wasAirborneLastStep()
+      ) {
         targetRpm = Math.max(targetRpm, P.engine.revLimiterRPM - 100)
       }
       this.rpm += (targetRpm - this.rpm) * Math.min(1, dt * 10)
@@ -550,7 +554,8 @@ export class CarController {
           ? (driveTorqueTotal * split) / 2
           : (driveTorqueTotal * (1 - split)) / 2
         if (driveDir > 0 && !input.handbrake) {
-          if (this.gear === 1) driveT = Math.min(driveT, P.drivetrain.torqueCapGear1)
+          if (this.gear === 1)
+            driveT = Math.min(driveT, P.drivetrain.torqueCapGear1)
           else if (this.gear === 2)
             driveT = Math.min(driveT, P.drivetrain.torqueCapGear2)
         }
@@ -648,7 +653,8 @@ export class CarController {
       ) {
         if (driven)
           legacyLong +=
-            (P.transmission.torqueConverter.creepForce / Math.max(1, drivenCount)) *
+            (P.transmission.torqueConverter.creepForce /
+              Math.max(1, drivenCount)) *
             clamp(1 - fwdSpeed / 3.5, 0, 1)
       }
       if (this.gear === -1) {
@@ -660,7 +666,8 @@ export class CarController {
           fwdSpeed > -3
         ) {
           legacyLong -=
-            (P.transmission.torqueConverter.creepForceReverse / Math.max(1, drivenCount)) *
+            (P.transmission.torqueConverter.creepForceReverse /
+              Math.max(1, drivenCount)) *
             clamp(1 + fwdSpeed / 3, 0, 1)
         }
       }
@@ -680,8 +687,7 @@ export class CarController {
       }
 
       const lag = this.tireLag[wi]
-      const rate =
-        (Math.abs(res.vx) + 0.5) / P.wheels.relaxationLength
+      const rate = (Math.abs(res.vx) + 0.5) / P.wheels.relaxationLength
       lag.fx = (lag.fx + dt * rate * res.fx) / (1 + dt * rate)
       lag.fy = (lag.fy + dt * rate * res.fy) / (1 + dt * rate)
       this.lastTireDiag[wi] = res
@@ -756,7 +762,11 @@ export class CarController {
               (input.throttle - input.brake) * 16000 - input.steer * 9000
             if (rollT !== 0) {
               this.body.applyTorqueImpulse(
-                { x: fwdV.x * rollT * dt, y: fwdV.y * rollT * dt, z: fwdV.z * rollT * dt },
+                {
+                  x: fwdV.x * rollT * dt,
+                  y: fwdV.y * rollT * dt,
+                  z: fwdV.z * rollT * dt,
+                },
                 true,
               )
             }
@@ -872,10 +882,7 @@ export class CarController {
     const n = this.P.transmission.gearRatios.length
     const next = clamp((this.gear as number) + dir, 1, n) as Gear
     if (next === this.gear) return
-    if (
-      dir < 0 &&
-      this.predictedRpm(next) > this.P.engine.redlineRPM - 200
-    )
+    if (dir < 0 && this.predictedRpm(next) > this.P.engine.redlineRPM - 200)
       return
     this.gear = next
     this.shiftTimer = this.P.transmission.shiftTimeAuto

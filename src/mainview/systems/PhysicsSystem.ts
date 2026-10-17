@@ -56,7 +56,10 @@ export function createChassisBody(
     .setFriction(0.4)
     .setRestitution(0.1)
   world.createCollider(col, body)
-  world.createCollider(createCabinCollider(RAPIER_, { width: w, height: h, length: l }), body)
+  world.createCollider(
+    createCabinCollider(RAPIER_, { width: w, height: h, length: l }),
+    body,
+  )
   return body
 }
 
@@ -75,10 +78,7 @@ export function createCabinCollider(
 }
 
 export function stepWorld(world: RAPIER.World, dt: number) {
-  const n = Math.min(
-    MAX_SUBSTEPS,
-    Math.max(1, Math.round(dt / FIXED_DT)),
-  )
+  const n = Math.min(MAX_SUBSTEPS, Math.max(1, Math.round(dt / FIXED_DT)))
   for (let i = 0; i < n; i++) world.step()
 }
 

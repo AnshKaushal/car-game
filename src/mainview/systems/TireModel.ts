@@ -1,4 +1,3 @@
-
 export interface Vec3 {
   x: number
   y: number
@@ -104,7 +103,7 @@ export class TireModel {
       fmax: 0,
       usage: 0,
       rollingForce: 0,
-    });
+    })
 
     const n = norm(c.normal)
     let t = sub(c.wheelHeading, scale(n, dot(c.wheelHeading, n)))
@@ -120,7 +119,7 @@ export class TireModel {
       x: n.y * t.z - n.z * t.y,
       y: n.z * t.x - n.x * t.z,
       z: n.x * t.y - n.y * t.x,
-    });
+    })
 
     const Fz = c.grounded ? Math.max(0, c.normalLoad) : 0
     if (Fz <= 1) return zero(t, l)

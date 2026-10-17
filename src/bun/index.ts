@@ -1,4 +1,9 @@
-import { ApplicationMenu, BrowserWindow, GlobalShortcut, Updater } from "electrobun/main"
+import {
+  ApplicationMenu,
+  BrowserWindow,
+  GlobalShortcut,
+  Updater,
+} from "electrobun/main"
 import os from "os"
 
 const DEV_SERVER_PORT = 5173
@@ -187,39 +192,39 @@ function createWindow(winUrl: string, windowed = isWindowed) {
 if (process.platform === "win32") {
   ApplicationMenu.setApplicationMenu([])
 } else {
-ApplicationMenu.setApplicationMenu([
-  {
-    label: "OverSteer",
-    submenu: [
-      {
-        label: "Toggle Fullscreen",
-        action: "toggle-fullscreen",
-        accelerator: "CmdOrCtrl+F",
-      },
-      { role: "quit" },
-    ],
-  },
-  {
-    label: "Edit",
-    submenu: [
-      { role: "undo" },
-      { role: "redo" },
-      { role: "cut" },
-      { role: "copy" },
-      { role: "paste" },
-      { role: "selectAll" },
-    ],
-  },
-  {
-    label: "Window",
-    submenu: [
-      {
-        label: "Toggle Fullscreen",
-        action: "toggle-fullscreen",
-      },
-    ],
-  },
-])
+  ApplicationMenu.setApplicationMenu([
+    {
+      label: "OverSteer",
+      submenu: [
+        {
+          label: "Toggle Fullscreen",
+          action: "toggle-fullscreen",
+          accelerator: "CmdOrCtrl+F",
+        },
+        { role: "quit" },
+      ],
+    },
+    {
+      label: "Edit",
+      submenu: [
+        { role: "undo" },
+        { role: "redo" },
+        { role: "cut" },
+        { role: "copy" },
+        { role: "paste" },
+        { role: "selectAll" },
+      ],
+    },
+    {
+      label: "Window",
+      submenu: [
+        {
+          label: "Toggle Fullscreen",
+          action: "toggle-fullscreen",
+        },
+      ],
+    },
+  ])
 }
 
 const url = await getMainViewUrl()

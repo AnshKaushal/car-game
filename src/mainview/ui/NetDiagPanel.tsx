@@ -18,7 +18,9 @@ export function NetDiagPanel() {
   const peers = Object.entries(snap.peers)
   return (
     <div className="pointer-events-none absolute bottom-3 left-3 z-50 max-w-[340px] rounded-xl border border-white/15 bg-black/75 px-3 py-2 font-mono text-[10px] leading-4 text-gray-200 backdrop-blur">
-      <div className="font-bold tracking-widest text-[#8fb8d8]">NET DIAG (dev)</div>
+      <div className="font-bold tracking-widest text-[#8fb8d8]">
+        NET DIAG (dev)
+      </div>
       <div>
         send {snap.sendHz}/s ({snap.sendTotal}) · recv {snap.recvHz}/s (
         {snap.recvTotal}) · invalid {snap.invalidTotal}

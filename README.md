@@ -18,30 +18,30 @@ Grab the latest DMG (macOS) or Setup zip (Windows) from the [Releases page](../.
 
 ## Controls
 
-| Input | Action |
-| --- | --- |
-| `W` / `↑` | Throttle |
-| `S` / `↓` | Brake in gear/neutral, throttle in reverse |
-| `A` `D` / `←` `→` | Steer |
-| `Q` / `E` | Downshift / upshift (manual mode) |
-| `M` | Toggle auto / manual gearbox |
-| `L` | Toggle launch control |
-| `Space` | Handbrake — disables TC and ESC |
-| `R` | Reset the car onto the road |
-| `C` | Toggle chase-camera distance |
-| `Enter` | Start |
-| `Esc` | Release the mouse |
-| Mouse | Orbit the camera; eases back behind the car after a couple of seconds |
+| Input             | Action                                                                |
+| ----------------- | --------------------------------------------------------------------- |
+| `W` / `↑`         | Throttle                                                              |
+| `S` / `↓`         | Brake in gear/neutral, throttle in reverse                            |
+| `A` `D` / `←` `→` | Steer                                                                 |
+| `Q` / `E`         | Downshift / upshift (manual mode)                                     |
+| `M`               | Toggle auto / manual gearbox                                          |
+| `L`               | Toggle launch control                                                 |
+| `Space`           | Handbrake — disables TC and ESC                                       |
+| `R`               | Reset the car onto the road                                           |
+| `C`               | Toggle chase-camera distance                                          |
+| `Enter`           | Start                                                                 |
+| `Esc`             | Release the mouse                                                     |
+| Mouse             | Orbit the camera; eases back behind the car after a couple of seconds |
 
 ## Tech stack
 
-| Layer | Choice |
-| --- | --- |
-| Shell | Electrobun / Hutch |
-| UI | React 18 + Tailwind CSS v4 (Vite plugin) |
-| 3D | three.js |
+| Layer   | Choice                                        |
+| ------- | --------------------------------------------- |
+| Shell   | Electrobun / Hutch                            |
+| UI      | React 18 + Tailwind CSS v4 (Vite plugin)      |
+| 3D      | three.js                                      |
 | Physics | Rapier 3D (WASM) + hand-written vehicle model |
-| Build | Vite 6, TypeScript 5.7 |
+| Build   | Vite 6, TypeScript 5.7                        |
 
 ## Getting started
 
@@ -107,7 +107,7 @@ scripts/                    # headless checks (see above)
 
 ## Releases
 
-`.github/workflows/release.yml` is **manual** — run it from the *Actions → Build & Release → Run workflow* tab. Each run publishes one GitHub Release:
+`.github/workflows/release.yml` is **manual** — run it from the _Actions → Build & Release → Run workflow_ tab. Each run publishes one GitHub Release:
 
 1. **Version** — reads the newest `vX.Y.Z` tag in the repo and bumps the patch (`v1.0.3` → `v1.0.4`). The first run, with no tags, starts at `v1.0.0`.
 2. **Build** — a macOS (arm64) job and a Windows (x64) job install Hutch, run `hutch run install`, stamp the new version into `electrobun.config.ts`, and run `hutch run build` (stable channel).
