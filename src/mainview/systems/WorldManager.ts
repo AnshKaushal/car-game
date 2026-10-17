@@ -967,8 +967,8 @@ export class WorldManager {
     const barrelIdxs = this.propVariants.map((p, i) => p.category === "barrel" ? i : -1).filter(i => i >= 0)
     const logIdxs = this.propVariants.map((p, i) => p.category === "log" ? i : -1).filter(i => i >= 0)
     const s0 = seg * this.segLen
-    // Road half-width is 6 m — nothing may spawn inside 7.5 m of the centre.
-    const ROAD_CLEAR = 7.5
+    // Road half-width is 8 m — nothing may spawn inside 9.5 m of the centre.
+    const ROAD_CLEAR = 9.5
 
     const pushProp = (
       s: number, seed: number, i: number,

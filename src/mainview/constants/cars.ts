@@ -1,4 +1,9 @@
-import { CAR_PHYSICS, createPhysicsConfig, type CarPhysicsConfig } from "./physics"
+import {
+  CAR_PHYSICS,
+  createPhysicsConfig,
+  type CarPhysicsConfig,
+} from "./physics"
+import type { PaintTextureRule } from "../systems/carTint"
 import type { WheelDef } from "../systems/Suspension"
 
 /**
@@ -65,8 +70,6 @@ export interface CarDefinition {
   name: string
   /** Short name for race standings, e.g. "Urus". */
   shortName: string
-  /** One-line menu blurb. */
-  blurb: string
   /** Path under baseUrl, e.g. "models/g_wagon.glb". */
   modelFile: string
   /** Full vehicle physics (same shape as the legacy global tune). */
@@ -88,6 +91,20 @@ export interface CarDefinition {
    * until the player picks a swatch (null = never call tintCar).
    */
   defaultTint: number | null
+  /**
+   * Paint-material allowlist (regex sources, matched against the material
+   * name or mesh name — see tintCar). Set when the generic paint heuristic
+   * can't see the car's body: Urus (saturated orange body), G-Wagen
+   * (single shared "body" material), R8 (pin "body" so trim never tints).
+   * Omit to use the heuristic (M3).
+   */
+  paintMatch?: string[]
+  /**
+   * Texture rule for single-material textured models (see PaintTextureRule).
+   * G-Wagen keeps its base map with the red body texels neutralized, so
+   * only the outer body takes the picked paint — glass/lights/trim stay.
+   */
+  paintTexture?: PaintTextureRule
 }
 
 const M3_WHEELS: CarDefinition["wheels"] = [
@@ -104,7 +121,6 @@ const m3: CarDefinition = {
   id: "bmw-m3",
   name: "BMW M3",
   shortName: "M3",
-  blurb: "800 HP RWD reference — balanced, catchable, tail-happy.",
   modelFile: "models/bmw_m3.glb",
   physics: createPhysicsConfig({}),
   wheels: M3_WHEELS,
@@ -118,7 +134,6 @@ const r8: CarDefinition = {
   id: "audi-r8",
   name: "Audi R8 V10",
   shortName: "R8",
-  blurb: "640 HP NA V10 quattro that screams to 8,700 rpm, hooked up.",
   modelFile: "models/audi_r8.glb",
   physics: createPhysicsConfig({
     mass: { chassis: 1595, frontWheel: 25, rearWheel: 25, total: 1695 },
@@ -219,6 +234,8 @@ const r8: CarDefinition = {
   pivots: { names: ["Plane003", "Plane006", "Plane009", "Plane012"] },
   dash: { maxRpm: 9000, redFromRpm: 8000, maxKmh: 360 },
   defaultTint: null,
+  // "body" is the only paint; white trim/glass stay stock.
+  paintMatch: ["^body$"],
   tested: { zeroToHundredS: 3.4, topSpeedKmh: 342 },
 }
 
@@ -226,7 +243,6 @@ const gwagon: CarDefinition = {
   id: "g-wagon",
   name: "Mercedes G 63",
   shortName: "G 63",
-  blurb: "850 HP / 2.5 t brick — soft, rolly, pulls clean to 320.",
   modelFile: "models/g_wagon.glb",
   physics: createPhysicsConfig({
     mass: { chassis: 2570, frontWheel: 32, rearWheel: 32, total: 2700 },
@@ -326,6 +342,12 @@ const gwagon: CarDefinition = {
   pivots: { pattern: "^wheel[FB][LR]$" },
   dash: { maxRpm: 7000, redFromRpm: 6000, maxKmh: 260 },
   defaultTint: null,
+  // Single shared "body" material for the whole GLB; mesh-level SKIP keeps
+  // the wheels/calipers sharing it stock while the shell tints. The shell
+  // is told apart from glass/lights by its red base-map texels, which get
+  // neutralized so only the outer body takes the picked paint.
+  paintMatch: ["^body$"],
+  paintTexture: { keepMap: true, neutralize: { color: [255, 0, 0], tol: 60 } },
   tested: { zeroToHundredS: 4.3, topSpeedKmh: 319 },
 }
 
@@ -333,7 +355,6 @@ const urus: CarDefinition = {
   id: "lambo-urus",
   name: "Lamborghini Urus",
   shortName: "Urus",
-  blurb: "700 HP super-SUV — broad torque, AWD traction, 320 legs.",
   modelFile: "models/lamborghini_urus.glb",
   physics: createPhysicsConfig({
     mass: { chassis: 2200, frontWheel: 30, rearWheel: 30, total: 2320 },
@@ -434,6 +455,9 @@ const urus: CarDefinition = {
   pivots: { names: ["Plane030", "Plane031", "Plane032", "Plane035"] },
   dash: { maxRpm: 8000, redFromRpm: 6200, maxKmh: 320 },
   defaultTint: null,
+  // Body paint is Material.001 (saturated orange — invisible to the
+  // gray-only heuristic); pin it so gray trim/brakes never tint.
+  paintMatch: ["^Material\\.001$"],
   tested: { zeroToHundredS: 3.9, topSpeedKmh: 316 },
 }
 

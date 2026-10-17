@@ -4,7 +4,7 @@ import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js"
 import type * as RAPIER from "@dimforge/rapier3d-compat"
 import { CAR_PHYSICS } from "../constants/physics"
 import type { WheelDef } from "./Suspension"
-import { tintCar, whitenRims } from "./carTint"
+import { tintCar, whitenRims, type PaintTextureRule } from "./carTint"
 
 export const CAR_MODEL_YAW = Math.PI
 
@@ -21,6 +21,10 @@ export interface CarVisualOptions {
   wheelSpots?: readonly WheelDef[]
   /** Wheel radius for fallback cylinders + imposter. */
   wheelRadius?: number
+  /** Paint-material allowlist, forwarded to tintCar (see carTint). */
+  paintMatch?: string[]
+  /** Texture rule for single-material textured models (see carTint). */
+  paintTexture?: PaintTextureRule
 }
 
 /** Pivot candidates thinner than this fraction of the body length are
@@ -131,7 +135,13 @@ export class CarVisual {
     // A setTint() may have landed while the model was loading — newest wins.
     const effective = this.lastTint ?? tint
     const model = source.clone(true)
-    this.tintedMats = effective !== undefined ? tintCar(model, effective) : []
+    this.tintedMats =
+      effective !== undefined
+        ? tintCar(model, effective, {
+            match: opts?.paintMatch,
+            texture: opts?.paintTexture,
+          })
+        : []
     whitenRims(model)
     model.traverse((o: any) => {
       if (o.isMesh) {

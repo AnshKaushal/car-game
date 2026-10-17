@@ -51,6 +51,7 @@ export type NetworkEventType =
   | "FINISH_RACE"
   | "PING"
   | "PONG"
+  | "DENY"
 
 export interface NetworkEventPacket {
   type: NetworkEventType

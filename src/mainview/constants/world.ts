@@ -1,7 +1,7 @@
 export const WORLD_CONFIG = {
   road: {
-    width: 12,
-    laneWidth: 3.5,
+    width: 16,
+    laneWidth: 4.0,
     shoulderWidth: 2.5,
     segmentLength: 50,
     segmentsAhead: 30,

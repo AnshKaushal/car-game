@@ -5,6 +5,7 @@ import { createCabinCollider } from "../PhysicsSystem"
 import { CAR_PHYSICS } from "../../constants/physics"
 import type { TireSmoke } from "../TireSmoke"
 import type { ValidatedState } from "./stateProtocol"
+import type { PaintTextureRule } from "../carTint"
 import {
   CORRECTION_ACCEL_MAX,
   CorrectionState,
@@ -36,6 +37,10 @@ export interface RemoteCarOptions {
   dims?: { width: number; height: number; length: number }
   /** Chassis mass of the peer's car. */
   mass?: number
+  /** Paint-material allowlist for the peer's car (see tintCar). */
+  paintMatch?: string[]
+  /** Texture rule for single-material textured models (see tintCar). */
+  paintTexture?: PaintTextureRule
 }
 
 const REMOTE_DEFAULT_MODEL = "models/bmw_m3.glb"
@@ -126,6 +131,8 @@ export class RemoteCar {
   private scene: THREE.Scene | null = null
   private baseUrl = ""
   private modelFile: string
+  private paintMatch: string[] | undefined
+  private paintTexture: PaintTextureRule | undefined
 
   constructor(
     id: string,
@@ -143,6 +150,8 @@ export class RemoteCar {
     this.scene = scene
     this.baseUrl = baseUrl
     this.modelFile = opts?.modelFile ?? REMOTE_DEFAULT_MODEL
+    this.paintMatch = opts?.paintMatch
+    this.paintTexture = opts?.paintTexture
 
     this.visual = new CarVisual()
     this.visual.castShadow = true
@@ -212,7 +221,11 @@ export class RemoteCar {
     const scene = this.scene
     const visual = this.visual
     visual
-      .load(this.baseUrl, this.color, { modelFile: this.modelFile })
+      .load(this.baseUrl, this.color, {
+        modelFile: this.modelFile,
+        paintMatch: this.paintMatch,
+        paintTexture: this.paintTexture,
+      })
       .then(() => {
         scene?.add(visual.group)
       })
@@ -228,10 +241,15 @@ export class RemoteCar {
    * intentionally NOT rebuilt — collider size differences between road
    * cars are small, and rebuilding mid-session risks contact pops.
    */
-  setModel(modelFile: string | undefined | null) {
+  setModel(
+    modelFile: string | undefined | null,
+    ghost?: { paintMatch?: string[]; paintTexture?: PaintTextureRule },
+  ) {
     const next = modelFile || REMOTE_DEFAULT_MODEL
     if (next === this.modelFile) return
     this.modelFile = next
+    this.paintMatch = ghost?.paintMatch
+    this.paintTexture = ghost?.paintTexture
     try {
       this.scene?.remove(this.visual.group)
     } catch {}

@@ -9,3 +9,26 @@
 .no-scrollbar::-webkit-scrollbar {
   display: none;
 }
+
+/* Custom-paint popout entrance (stylesheet keyframes — no dependency on
+   runtime-injected <style> tags or transition class state). */
+@keyframes paint-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.92) translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+.paint-pop-in {
+  animation: paint-pop-in 180ms ease-out;
+  /* Explicit box so the picker is usable even if a third-party stylesheet
+     fails to apply (strict CSP webviews can drop injected <style> tags). */
+  width: 224px;
+}
+.paint-pop-in .react-colorful {
+  width: 200px;
+  height: 172px;
+}

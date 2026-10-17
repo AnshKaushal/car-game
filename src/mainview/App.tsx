@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import * as THREE from "three"
+import { Play, RotateCcw, LogOut } from "lucide-react"
 import {
   initPhysics,
   createWorld,
@@ -29,6 +30,7 @@ import {
   carProgress,
   holdInput,
   makeProfile,
+  makeTrafficProfile,
   stripEdges,
   type TrafficEntry,
 } from "./systems/AIDriver"
@@ -37,11 +39,15 @@ import {
   RACE_COUNTS,
   RACE_DISTANCES_KM,
   emptyRace,
+  trafficCountFor,
+  TRAFFIC_OPTIONS,
   type RaceSetup,
   type RaceSnapshot,
   type RaceStanding,
+  type TrafficLevel,
 } from "./systems/RaceTypes"
 import Dashboard from "./ui/Dashboard"
+import { EASE, Screen, usePresence, Wipe } from "./ui/anim"
 import { RaceHud, RaceLiveBoard, RaceMenu, RaceResults } from "./ui/RaceOverlay"
 import { SpeedLines } from "./ui/SpeedLines"
 import { MultiplayerManager } from "./systems/net/MultiplayerManager"
@@ -146,7 +152,7 @@ export default function App() {
   })
   const carIdRef = useRef(carId)
   const garageApiRef = useRef<{
-    showCar: (id: string) => void
+    showCar: (id: string, tint?: number) => void
     paint: (color: number | null) => void
   } | null>(null)
   const selectCar = (id: string) => {
@@ -184,14 +190,15 @@ export default function App() {
     return getCar(id).defaultTint ?? undefined
   }
   const setPaintFor = (id: string, color: number | null) => {
-    setPaint((prev) => {
-      const next = { ...prev, [id]: color }
-      paintRef.current = next
-      try {
-        localStorage.setItem("oversteer_paint", JSON.stringify(next))
-      } catch {}
-      return next
-    })
+    // Update the ref synchronously: garageApi.paint() may reload the
+    // showroom model in the same tick and must read the fresh pick (the
+    // setState updater below would still see the stale value).
+    const next = { ...paintRef.current, [id]: color }
+    paintRef.current = next
+    setPaint(next)
+    try {
+      localStorage.setItem("oversteer_paint", JSON.stringify(next))
+    } catch {}
     if (id === carIdRef.current) garageApiRef.current?.paint(color)
   }
   // Rival pool: which registry cars the AI grid may draw from. Empty
@@ -223,11 +230,67 @@ export default function App() {
     })
   }
 
+  // Ambient traffic density for free roam (BeamNG-style). Persisted;
+  // mirrored in a ref so the world-setup effect reads the live value.
+  const [trafficLevel, setTrafficLevel] = useState<TrafficLevel>(() => {
+    try {
+      const raw = localStorage.getItem("oversteer_traffic")
+      if (raw === "low" || raw === "medium" || raw === "high") return raw
+    } catch {}
+    return "off"
+  })
+  const trafficRef = useRef(trafficLevel)
+  const selectTraffic = (level: TrafficLevel) => {
+    trafficRef.current = level
+    setTrafficLevel(level)
+    try {
+      localStorage.setItem("oversteer_traffic", level)
+    } catch {}
+  }
+
   const [showMultiplayerLobby, setShowMultiplayerLobby] = useState(false)
+  // Session-change wipe (grid, free roam, back to the garage). Bumping
+  // `token` replays the timeline; the component itself stays mounted
+  // and invisible between firings.
+  const [wipe, setWipe] = useState<{
+    token: number
+    label: string
+    red: boolean
+  } | null>(null)
+  const fireWipe = (label: string, red = false) =>
+    setWipe((w) => ({ token: (w?.token ?? 0) + 1, label, red }))
+  // Rebuilding the session tears down and rebuilds physics, the world,
+  // traffic and the showroom model — a chunk of main-thread work that
+  // would freeze the frames the wipe is playing. Callers fire the wipe
+  // first, then bump `session` once the colour field fully covers the
+  // screen, so the hitch happens behind it instead of on top of it.
+  const sessionTimer = useRef(0)
+  const rebuildSession = (delay = 300) => {
+    window.clearTimeout(sessionTimer.current)
+    sessionTimer.current = window.setTimeout(() => {
+      setSession((n) => n + 1)
+    }, delay)
+  }
+  useEffect(() => () => window.clearTimeout(sessionTimer.current), [])
+  // Title screen in front of the garage. Any key or click moves to the
+  // garage; Enter inside the intro must NOT also launch free drive.
+  const [showIntro, setShowIntro] = useState(true)
+  const showIntroRef = useRef(true)
+  showIntroRef.current = showIntro
+  const showLobbyRef = useRef(false)
+  showLobbyRef.current = showMultiplayerLobby
+  const loadingRef = useRef(true)
+  loadingRef.current = loading
+  useEffect(() => {
+    if (!showIntro) return
+    const dismiss = () => setShowIntro(false)
+    window.addEventListener("keydown", dismiss)
+    return () => window.removeEventListener("keydown", dismiss)
+  }, [showIntro])
   const [netPeers, setNetPeers] = useState<PeerPlayer[]>([])
   const [netConnected, setNetConnected] = useState(false)
   const [joinError, setJoinError] = useState<string | null>(null)
-  const [netRoomId, setNetRoomId] = useState("paddock-1")
+  const [netRoomId, setNetRoomId] = useState("")
   const [driverName, setDriverName] = useState(
     () => localStorage.getItem("oversteer_name") || "Racer",
   )
@@ -251,10 +314,14 @@ export default function App() {
         setJoinError(msg)
         setNetConnected(false)
       },
-      onRaceStartSignal: (_startTimeMs, distanceM) => {
+      onRaceStartSignal: (startTimeMs, distanceM, rivals = 0) => {
+        // startTimeMs is generated once by the starter and broadcast, so
+        // it doubles as the shared grid seed: every client shuffles the
+        // same AI field into the same slots (see world setup below).
         const next = {
-          rivals: 0,
+          rivals,
           distanceM,
+          seed: Math.floor(startTimeMs),
         }
         lastRaceRef.current = next
         raceSetupRef.current = next
@@ -264,15 +331,16 @@ export default function App() {
         setPaused(false)
         setShowMultiplayerLobby(false)
         setRace(emptyRace)
+        fireWipe("ON THE GRID", true)
         lockCanvas()
-        setSession((n) => n + 1)
+        rebuildSession()
       },
     })
   }, [])
 
-  const handleStartMultiplayerRace = (distKm: number) => {
+  const handleStartMultiplayerRace = (distKm: number, aiCount: number) => {
     const distM = distKm * 1000
-    multiplayerRef.current?.startMultiplayerRace(distM)
+    multiplayerRef.current?.startMultiplayerRace(distM, aiCount)
   }
 
   const handleStartFreeDrive = () => {
@@ -340,9 +408,10 @@ export default function App() {
     setPaused(false)
     setLockHint(false)
     setRace(emptyRace)
+    fireWipe("FREE ROAM")
     lockCanvas()
     // Rebuild the world so a previous race grid is cleared.
-    setSession((n) => n + 1)
+    rebuildSession()
   }
 
   const startRace = () => {
@@ -358,11 +427,12 @@ export default function App() {
     setPaused(false)
     setLockHint(false)
     setRace(emptyRace)
+    fireWipe("ON THE GRID", true)
     lockCanvas()
     // The grid is built inside the world effect — it only re-runs when
     // `session` changes, so starting a race must bump it. Without this
     // the race runs on the pre-built empty world and no rivals appear.
-    setSession((n) => n + 1)
+    rebuildSession()
   }
 
   const pauseGame = () => {
@@ -388,6 +458,14 @@ export default function App() {
   const raceAgain = () => {
     const last = lastRaceRef.current
     if (!last) return
+    const net = multiplayerRef.current
+    if (net && net.roomId) {
+      // Multiplayer rematch: announce readiness, then grid up. The world
+      // below rebuilds onto the start line but holds the countdown (cars
+      // locked, "Waiting for …" HUD) until EVERY driver in the room has
+      // also hit Race again — see the staging gate in the world effect.
+      net.setLocalReady(true, last.distanceM)
+    }
     pausedRef.current = false
     startedRef.current = true
     setPaused(false)
@@ -397,10 +475,15 @@ export default function App() {
     document.body.style.cursor = ""
     if (document.pointerLockElement) document.exitPointerLock?.()
     raceSetupRef.current = last
-    setSession((n) => n + 1)
+    fireWipe("ON THE GRID", true)
+    rebuildSession()
   }
 
   const quitToMenu = () => {
+    const net = multiplayerRef.current
+    // Bailing from a staged grid / results un-readies us so nobody waits
+    // on a driver who already left.
+    if (net && net.roomId && net.localReady) net.setLocalReady(false)
     pausedRef.current = false
     startedRef.current = false
     raceSetupRef.current = null
@@ -414,7 +497,8 @@ export default function App() {
     document.body.style.cursor = ""
     if (document.pointerLockElement) document.exitPointerLock?.()
     // Rebuild a clean free-drive world behind the menu.
-    setSession((n) => n + 1)
+    fireWipe("GARAGE")
+    rebuildSession()
   }
 
   pauseFnRef.current = pauseGame
@@ -488,9 +572,11 @@ export default function App() {
 
         const playerDef = getCar(carIdRef.current)
         // Tall cars (G 63/Urus) need the chase camera riding higher, or
-        // the roof fills the frame and the road ahead disappears.
+        // the roof fills the frame and the road ahead disappears. Scaled
+        // hard off the height delta; floored at 0 so low sports cars
+        // keep their stock low camera.
         const camHeightBoost =
-          (playerDef.physics.dimensions.height - 1.43) * 0.6
+          Math.max(0, playerDef.physics.dimensions.height - 1.43) * 1.35
 
         const setup = raceSetupRef.current
         const rivalCount = setup?.rivals ?? 0
@@ -510,9 +596,10 @@ export default function App() {
         const netTotal = netIds ? netIds.length : 1
         const gridCount = 1 + rivalCount + (isNetRace ? netPeerCount : 0)
         const raceActiveInit = rivalCount > 0 || isNetRace
-        // Big fields are GPU-bound (20 car models): drop render scale
-        // rather than physics rate when the grid grows.
-        const prCap = rivalCount > 8 ? 1.2 : 1.75
+        // High quality always: keep full render scale even with big
+        // grids — no per-car-count pixel-ratio cap, no dynamic
+        // resolution drops.
+        const prCap = 1.75
         renderer!.setPixelRatio(Math.min(window.devicePixelRatio, prCap))
         if (raceActiveInit) {
           // Chequered finish strip across the road at the race distance.
@@ -546,7 +633,7 @@ export default function App() {
           const row = Math.floor(slot / 2)
           const loneLast = total % 2 === 1 && slot === total - 1
           const left = slot % 2 === 0
-          return { s: -row * 7.5, lateral: loneLast ? 0 : left ? -2.15 : 2.15 }
+          return { s: -row * 7.5, lateral: loneLast ? 0 : left ? -3.0 : 3.0 }
         }
         // Grid order: first race is player on pole; after that, rivals
         // line up by the previous finishing order and the player draws a
@@ -556,6 +643,9 @@ export default function App() {
         let aiSlotOf: (ai: number) => number = (ai) => ai + 1
         if (isNetRace && net) {
           playerSlotIdx = netIndex
+          // Humans own slots 0..netTotal-1 (each peer sits at its sorted
+          // netIndex) — bots line up behind them so grids never overlap.
+          aiSlotOf = (ai) => netTotal + ai
         } else if (raceActiveInit && prev && prev.length > 0) {
           const pos = new Map<number, number>()
           prev.forEach((ai, i) => pos.set(ai, i))
@@ -631,13 +721,33 @@ export default function App() {
         // AI grid draws RANDOMLY from the player's rival pool (menu
         // "AI FIELD" toggles, persisted). Empty pool = whole roster.
         // Shuffled per race so the grid never looks the same twice.
-        const poolIds = poolRef.current.length
-          ? poolRef.current
-          : CARS.map((c) => c.id)
+        // Net races must agree on the bot field, so they always draw
+        // from the full roster (personal pools would desync it) and
+        // shuffle with the shared START_RACE seed. Each client then
+        // simulates its own copy of the bots locally — bot physics is
+        // never sent over the wire, only human cars are.
+        const useSharedField = isNetRace && setup?.seed != null
+        const poolIds = useSharedField
+          ? CARS.map((c) => c.id)
+          : poolRef.current.length
+            ? poolRef.current
+            : CARS.map((c) => c.id)
         const poolDefs = CARS.filter((c) => poolIds.includes(c.id))
         const gridPool = poolDefs.length > 0 ? poolDefs : [...CARS]
+        let rand: () => number = Math.random
+        if (useSharedField) {
+          // mulberry32 — tiny deterministic PRNG, same field everywhere.
+          let s = (setup!.seed! | 0) || 1
+          rand = () => {
+            s |= 0
+            s = (s + 0x6d2b79f5) | 0
+            let t = Math.imul(s ^ (s >>> 15), 1 | s)
+            t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
+            return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+          }
+        }
         for (let i = gridPool.length - 1; i > 0; i--) {
-          const j = (Math.random() * (i + 1)) | 0
+          const j = (rand() * (i + 1)) | 0
           const tmp = gridPool[i]
           gridPool[i] = gridPool[j]
           gridPool[j] = tmp
@@ -683,6 +793,8 @@ export default function App() {
               pivots: rivalDef.pivots,
               wheelSpots: rivalDef.wheels,
               wheelRadius: rivalDef.physics.wheels.radius,
+              paintMatch: rivalDef.paintMatch,
+              paintTexture: rivalDef.paintTexture,
             })
           } catch (e) {
             console.warn("rival model failed", e)
@@ -695,6 +807,110 @@ export default function App() {
             name: `${rivalDef.shortName} ${seen}`,
             color: colorHex(color),
             progress: s0,
+            finished: false,
+            finishTime: null,
+            stuckT: 0,
+            cached: holdInput(),
+            stride: 1,
+            edgeArmed: false,
+            hi: true,
+          })
+        }
+        // Ambient free-roam traffic (BeamNG-style): random cruisers in
+        // BOTH directions with varied pace, recycled around the player
+        // as they roam. Races never get traffic — grids use bots
+        // instead. The menus stay clean too: showroom builds with
+        // started=false.
+        const trafficCars: Rival[] = []
+        const trafficTarget =
+          startedRef.current && !raceActiveInit
+            ? trafficCountFor(trafficRef.current)
+            : 0
+        // Player sits at s≈0 straddling both halves — keep spawns clear.
+        const placed: { s: number; half: 1 | -1 }[] = [
+          { s: 0, half: 1 },
+          { s: 0, half: -1 },
+        ]
+        for (let i = 0; i < trafficTarget; i++) {
+          const def = CARS[(Math.random() * CARS.length) | 0]
+          // ~55% same-way, ~45% oncoming. Same-way owns +x, oncoming -x.
+          const tdir: 1 | -1 = Math.random() < 0.55 ? 1 : -1
+          const thalf: 1 | -1 = tdir === 1 ? 1 : -1
+          // Fully random spacing AHEAD of the player in road space,
+          // past the fog start (250-850 m) so nobody pops into view,
+          // rejection-sampled so nobody spawns inside another car.
+          // Oncoming cars spawn up the road too — they drive toward
+          // you; same-way cars drive with you.
+          let ts0 = 0
+          for (let attempt = 0; attempt < 8; attempt++) {
+            const cand = 250 + Math.random() * 600
+            ts0 = cand
+            const clash = placed.some(
+              (q) => q.half === thalf && Math.abs(q.s - cand) < 18,
+            )
+            if (!clash) break
+          }
+          placed.push({ s: ts0, half: thalf })
+          const tprof = makeTrafficProfile(Math.random, tdir)
+          const tyaw = roadDirYaw(ts0) + (tdir === 1 ? 0 : Math.PI)
+          const tnx = Math.cos(roadYaw(ts0))
+          const tnz = Math.sin(roadYaw(ts0))
+          const tb = createChassisBody(
+            world,
+            roadCenterX(ts0) + tnx * tprof.laneBias,
+            0.72,
+            -ts0 + tnz * tprof.laneBias,
+            def.physics.dimensions,
+            def.physics.mass.chassis,
+          )
+          const tq = new THREE.Quaternion().setFromEuler(
+            new THREE.Euler(0, tyaw, 0),
+          )
+          tb.setRotation({ x: tq.x, y: tq.y, z: tq.z, w: tq.w }, true)
+          // Rolling start: already moving at cruise pace along the road
+          // tangent, so free roam opens onto live traffic, not parked
+          // cars. The auto box walks up the gears by RPM on its own.
+          const tv0 =
+            ((tprof.cruiseKmh ?? 100) / 3.6) * (0.9 + Math.random() * 0.15)
+          const tslope =
+            (roadCenterX(ts0 + 4) - roadCenterX(ts0 - 4)) / 8
+          const tinv = 1 / Math.hypot(tslope, 1)
+          tb.setLinvel(
+            { x: tslope * tinv * tv0 * tdir, y: 0, z: -tinv * tv0 * tdir },
+            true,
+          )
+          const tc = new CarController(
+            world,
+            tb,
+            R,
+            def.physics,
+            def.wheels,
+            def.dash,
+          )
+          const tcolor = rivalColor((Math.random() * 64) | 0)
+          const tvis = new CarVisual()
+          tvis.castShadow = i < 2
+          try {
+            await tvis.load(baseUrl, tcolor, {
+              modelFile: def.modelFile,
+              targetLength: def.physics.dimensions.length,
+              pivots: def.pivots,
+              wheelSpots: def.wheels,
+              wheelRadius: def.physics.wheels.radius,
+              paintMatch: def.paintMatch,
+              paintTexture: def.paintTexture,
+            })
+          } catch (e) {
+            console.warn("traffic model failed", e)
+          }
+          scene.add(tvis.group)
+          trafficCars.push({
+            car: tc,
+            visual: tvis,
+            ai: new AIDriver(tprof),
+            name: def.shortName,
+            color: colorHex(tcolor),
+            progress: ts0,
             finished: false,
             finishTime: null,
             stuckT: 0,
@@ -726,9 +942,14 @@ export default function App() {
             resetPressed: false,
             toggleCameraPressed: false,
             startPressed: false,
-            escapePressed: false,
+            pausePressed: false,
           }
-          const allCars = [car, ...rivals.map((r) => r.car)]
+          // Settle the grid onto its suspension. Traffic is excluded on
+          // purpose: it spawns already rolling and must keep its speed.
+          const allCars = [
+            car,
+            ...rivals.map((r) => r.car),
+          ]
           for (let i = 0; i < 120; i++) {
             for (const c of allCars) c.update(FIXED_DT, zeroInput)
             world.step()
@@ -737,7 +958,11 @@ export default function App() {
 
         // Every chassis in the fight — passed to the AI so it can see
         // (and hit) the cars around it instead of only the road.
-        const allBodies = [body, ...rivals.map((r) => r.car.body)]
+        const allBodies = [
+          body,
+          ...rivals.map((r) => r.car.body),
+          ...trafficCars.map((r) => r.car.body),
+        ]
 
         let visual = new CarVisual()
         // Player paint: explicit pick, else the car's default (black for
@@ -753,6 +978,8 @@ export default function App() {
             pivots: playerDef.pivots,
             wheelSpots: playerDef.wheels,
             wheelRadius: playerDef.physics.wheels.radius,
+            paintMatch: playerDef.paintMatch,
+            paintTexture: playerDef.paintTexture,
           })
         } catch (e) {
           console.warn(
@@ -773,18 +1000,20 @@ export default function App() {
         {
           let showToken = 0
           garageApiRef.current = {
-            showCar: (id: string) => {
+            showCar: (id: string, tint?: number) => {
               const my = ++showToken
               if (startedRef.current) return
               const def = getCar(id)
               const next = new CarVisual()
               next
-                .load(baseUrl, playerPaint(id), {
+                .load(baseUrl, tint ?? playerPaint(id), {
                   modelFile: def.modelFile,
                   targetLength: def.physics.dimensions.length,
                   pivots: def.pivots,
                   wheelSpots: def.wheels,
                   wheelRadius: def.physics.wheels.radius,
+                  paintMatch: def.paintMatch,
+                  paintTexture: def.paintTexture,
                 })
                 .then(() => {
                   if (my !== showToken || disposed || startedRef.current) return
@@ -803,7 +1032,10 @@ export default function App() {
             paint: (color: number | null) => {
               if (startedRef.current || disposed) return
               if (color === null || !visual.hasTint()) {
-                garageApiRef.current?.showCar(carIdRef.current)
+                garageApiRef.current?.showCar(
+                  carIdRef.current,
+                  color ?? undefined,
+                )
                 return
               }
               try {
@@ -822,11 +1054,19 @@ export default function App() {
         // 3-2-1 countdown, then green. Cars stay parked until green.
         let headsUp = raceActive ? 2.6 : 0
         let countdown = raceActive ? 3.0 : 0
+        // Rematch staging latch: a net grid rebuilt via "Race again" holds
+        // its countdown until EVERY driver is ready (areAllReady). Once the
+        // gate opens it never closes for this race — a mid-race joiner (who
+        // starts unready) must not re-freeze a running countdown.
+        let released = !isNetRace || (net ? net.areAllReady() : true)
+        let staged = isNetRace && !released
+        let pausedTick = 0
         let playerFinished = false
         let playerFinishTime: number | null = null
         let playerProgress = 0
         let raceUiAcc = 0
         let shadowAcc = 0
+        let trafficShadowAcc = 0
         let playerDoneT = 0
 
         const smoke = new TireSmoke()
@@ -864,9 +1104,6 @@ export default function App() {
         let fpsLast = -1
         let frameMsAcc = 0
         let frameMsLast = -1
-        // Dynamic resolution: float pixel ratio to hold frame budget.
-        let dynPR = prCap
-        let dynCooldown = 0
         const camPos = new THREE.Vector3(startX, 3, 8)
         const showDesired = new THREE.Vector3()
         const camLook = new THREE.Vector3()
@@ -1041,26 +1278,7 @@ export default function App() {
           frameMsAcc += now - frameMsLast
           frameMsLast = now
           if (now - fpsLast >= 500) {
-            const emaMs = frameMsAcc / Math.max(1, fpsFrames)
-            // Dynamic resolution: spend pixels only while under budget.
-            // Dips soften the image for a moment instead of dropping
-            // frames; open road crisps back up. Cooldown avoids hunting.
-            dynCooldown -= 1
-            if (startedRef.current && !pausedRef.current && dynCooldown <= 0) {
-              if (emaMs > 17.5 && dynPR > 0.7) {
-                dynPR = Math.max(0.7, dynPR - 0.2)
-                renderer!.setPixelRatio(
-                  Math.min(window.devicePixelRatio, dynPR),
-                )
-                dynCooldown = 2
-              } else if (emaMs < 13 && dynPR < prCap) {
-                dynPR = Math.min(prCap, dynPR + 0.1)
-                renderer!.setPixelRatio(
-                  Math.min(window.devicePixelRatio, dynPR),
-                )
-                dynCooldown = 4
-              }
-            }
+            // Render scale stays constant — quality over frame budget.
             fpsFrames = 0
             frameMsAcc = 0
             fpsLast = now
@@ -1070,8 +1288,9 @@ export default function App() {
           dt = Math.min(dt, CAR_PHYSICS.simulation.maxFrameDt)
 
           const inp = input.update(dt)
-          if (!startedRef.current && inp.startPressed) startGame()
-          if (startedRef.current && inp.escapePressed) {
+          if (!startedRef.current && !showIntroRef.current && inp.startPressed)
+            startGame()
+          if (startedRef.current && inp.pausePressed) {
             if (pausedRef.current) resumeFnRef.current()
             else pauseFnRef.current()
           }
@@ -1114,16 +1333,36 @@ export default function App() {
             stepper.acc = 0
             setSpeedLines(0)
             smoke.update(dt)
+            // The scene is frozen behind the pause overlay, so redrawing
+            // it every frame buys nothing and costs: every new frame
+            // repaints the canvas, which forces the browser to re-filter
+            // the overlay's backdrop blur on the compositor. A third of
+            // the rate is the same frozen picture for a third of the work.
+            pausedTick = (pausedTick + 1) % 3
+            if (pausedTick !== 0) return
             renderer!.render(scene, camera)
             return
           }
 
           let t = null as null | ReturnType<typeof car.update>
           if (startedRef.current) {
-            if (raceActive && headsUp > 0) headsUp = Math.max(0, headsUp - dt)
-            else if (raceActive && countdown > 0)
+            // Staged grids don't tick down: the cars sit locked on the
+            // start line showing "Waiting for …" until the last READY
+            // lands, then the full heads-up + countdown runs for everyone.
+            if (isNetRace && !released && !raceFinished) {
+              if (net && net.areAllReady()) {
+                released = true
+                staged = false
+              } else {
+                staged = true
+              }
+            }
+            if (raceActive && headsUp > 0 && !staged)
+              headsUp = Math.max(0, headsUp - dt)
+            else if (raceActive && countdown > 0 && !staged)
               countdown = Math.max(0, countdown - dt)
-            const racing = !raceActive || (headsUp <= 0 && countdown <= 0)
+            const racing =
+              !raceActive || (released && headsUp <= 0 && countdown <= 0)
             if (raceActive && racing && !raceFinished) raceElapsed += dt
             const steps = pushFrameTime(stepper, dt)
             // Phase 1 diagnostics: physics tick rate + dropped sim time.
@@ -1159,6 +1398,28 @@ export default function App() {
                 }
               }
             }
+            if (trafficCars.length > 0) {
+              // Ambient traffic thinks with the same once-per-frame
+              // pattern (and the same distance stride) as race AI.
+              const tpp = body.translation()
+              const tEntries: TrafficEntry[] = allBodies.map((b) => {
+                const p = b.translation()
+                return { body: b, x: p.x, z: p.z }
+              })
+              for (const tc of trafficCars) {
+                tc.cached = tc.ai.drive(tc.car, tEntries, dt)
+                tc.edgeArmed = true
+                if (tc.ai.recovering) {
+                  tc.stride = 1
+                } else {
+                  const rp0 = tc.car.body.translation()
+                  const dx0 = rp0.x - tpp.x
+                  const dz0 = rp0.z - tpp.z
+                  const d2 = dx0 * dx0 + dz0 * dz0
+                  tc.stride = d2 < 6400 ? 1 : d2 < 40000 ? 2 : 4
+                }
+              }
+            }
             for (let i = 0; i < steps; i++) {
               substepTick++
               const subInp: DriveInput =
@@ -1174,12 +1435,19 @@ export default function App() {
                       resetPressed: false,
                       toggleCameraPressed: false,
                       startPressed: false,
-                      escapePressed: false,
+                      pausePressed: false,
                     }
               // Live pedals pre-green so launch control can arm — but the
               // car itself is padlocked to its grid slot until the flag
               // drops. Revs build, LC arms, nothing moves. No jumping.
-              const playerInp = !playerFinished ? subInp : holdInput()
+              // After YOU cross the line the car brakes to a rest
+              // (holdInput), then ~4 s later you get control back to cruise
+              // around while the field finishes — results still wait for
+              // everyone (or the 45 s mercy rule).
+              const postFinishFree =
+                playerFinished && !raceFinished && playerDoneT > 4
+              const playerInp =
+                !playerFinished || postFinishFree ? subInp : holdInput()
               const preGreen = raceActive && !racing && !playerFinished
               let lockT: { x: number; y: number; z: number } | null = null
               let lockR: { x: number; y: number; z: number; w: number } | null =
@@ -1205,6 +1473,17 @@ export default function App() {
                   }
                   rival.car.update(FIXED_DT, aiInp)
                 }
+              }
+              for (let ti = 0; ti < trafficCars.length; ti++) {
+                const tc = trafficCars[ti]
+                if ((substepTick + ti) % tc.stride !== 0) continue
+                let taiInp = tc.cached
+                if (tc.edgeArmed) {
+                  tc.edgeArmed = false
+                } else {
+                  taiInp = stripEdges(taiInp)
+                }
+                tc.car.update(FIXED_DT, taiInp)
               }
               // Shared-physics ghosts: velocity-drive remotes toward their
               // authoritative poses BEFORE stepping, so car-vs-car contacts
@@ -1363,6 +1642,13 @@ export default function App() {
                 // Finishing order drives the next grid: rivals line up by
                 // merit, the player draws a random slot.
                 prevOrderRef.current = order.map((o) => o.ai)
+                // Rematch gate reset: un-ready ourselves (broadcast) so the
+                // NEXT "Race again" needs fresh READYs from everyone. Only
+                // the local flag is cleared — peer flags flip on receipt,
+                // so a late finisher never wipes an early bird's READY.
+                if (net && net.roomId && net.localReady) {
+                  net.setLocalReady(false)
+                }
               }
             }
             // Distance-based shadow casters + model detail (2 Hz): you
@@ -1456,7 +1742,111 @@ export default function App() {
                 countdown: Math.ceil(countdown),
                 phase: headsUp > 0 ? "heads" : countdown > 0 ? "count" : "go",
                 readyIn: headsUp,
+                staged,
+                waitingFor: staged && net ? net.waitingForNames() : [],
               })
+            }
+          }
+          if (trafficCars.length > 0) {
+            // Procedural traffic: cars passed by, left far behind,
+            // buried, or hopelessly stuck are removed and respawned up
+            // the road (always AHEAD of the player in s, both halves)
+            // with a fresh random driver — same direction, new lane and
+            // pace — so density around you never thins out. (Teleport,
+            // not reload: the 3D model is kept, only the placement +
+            // driver are new.)
+            const playerS = -bp.z
+            for (const tc of trafficCars) {
+              const tp = tc.car.body.translation()
+              const tS = -tp.z
+              const tdir = tc.ai.profile.dir ?? 1
+              const trsp = tc.car.forwardSpeed
+              if (Math.abs(trsp) < 1.0) tc.stuckT += dt
+              else tc.stuckT = Math.max(0, tc.stuckT - dt * 3)
+              // BeamNG-style sight-based respawn: always out of
+              // sight. Same-way cars go 500-900 m ahead, past the fog
+              // fade; oncoming cars return 250-700 m up the road
+              // (fog-hidden on arrival, they close fast). Keeps the
+              // pool at exactly the chosen count, forever.
+              if (
+                tp.y < -3 ||
+                tc.stuckT > 12 ||
+                tS < playerS - 250 ||
+                tS > playerS + 1400
+              ) {
+                tc.stuckT = 0
+                // Sample a teleport spot keeping 35 m clear of every
+                // other car in the same half — respawning must never
+                // drop a bumper onto somebody else's roof.
+                let aheadS = playerS + 400
+                const myHalf = tdir
+                for (let a2 = 0; a2 < 8; a2++) {
+                  const cand =
+                    tdir === 1
+                      ? playerS + 500 + Math.random() * 400
+                      : playerS + 250 + Math.random() * 450
+                  aheadS = cand
+                  const clear = trafficCars.every((o) => {
+                    if (o === tc) return true
+                    const op = o.car.body.translation()
+                    const os = -op.z
+                    if ((o.ai.profile.dir ?? 1) !== myHalf) return true
+                    return Math.abs(os - cand) >= 35
+                  })
+                  if (clear) break
+                }
+                const ntprof = makeTrafficProfile(Math.random, tdir)
+                const nyaw =
+                  roadDirYaw(aheadS) + (tdir === 1 ? 0 : Math.PI)
+                const nnx = Math.cos(roadYaw(aheadS))
+                const nnz = Math.sin(roadYaw(aheadS))
+                tc.car.reset(
+                  new THREE.Vector3(
+                    roadCenterX(aheadS) + nnx * ntprof.laneBias,
+                    0.72,
+                    -aheadS + nnz * ntprof.laneBias,
+                  ),
+                  nyaw,
+                )
+                // Rolling respawn: back on the road already moving.
+                const nv0 =
+                  ((ntprof.cruiseKmh ?? 100) / 3.6) *
+                  (0.9 + Math.random() * 0.15)
+                const nslope =
+                  (roadCenterX(aheadS + 4) - roadCenterX(aheadS - 4)) / 8
+                const ninv = 1 / Math.hypot(nslope, 1)
+                tc.car.body.setLinvel(
+                  {
+                    x: nslope * ninv * nv0 * tdir,
+                    y: 0,
+                    z: -ninv * nv0 * tdir,
+                  },
+                  true,
+                )
+                tc.ai = new AIDriver(ntprof)
+              }
+              tc.visual.syncFromBody(
+                tc.car.body,
+                tc.car.steerAngle,
+                tc.car.getWheelOmegas(),
+                dt,
+                tc.car.getWheelCompressions(),
+              )
+            }
+            // Near-traffic shadows at 2 Hz, same as race AI.
+            trafficShadowAcc += dt
+            if (trafficShadowAcc > 0.5) {
+              trafficShadowAcc = 0
+              const tranked = trafficCars
+                .map((r, i) => {
+                  const rp = r.car.body.translation()
+                  const dx = rp.x - bp.x
+                  const dz = rp.z - bp.z
+                  return { i, d: dx * dx + dz * dz }
+                })
+                .sort((a, b) => a.d - b.d)
+              const tnear = new Set(tranked.slice(0, 3).map((o) => o.i))
+              trafficCars.forEach((r, i) => r.visual.setCastShadow(tnear.has(i)))
             }
           }
           wm.update(-bp.z, carPos, grassTargetFor(car.forwardSpeed, raceActive))
@@ -1515,6 +1905,34 @@ export default function App() {
             camera.position.copy(camPos)
             camLook.copy(carPos)
             camLook.y += 0.55 + playerDef.physics.dimensions.height * 0.12
+            // Panel-aware framing: the garage sheet is ~400px wide on the
+            // right, so aim the orbit lookAt past the car and the car
+            // centers in the scene area the panel leaves visible. The
+            // shift is screen-space: panel fraction of the screen width,
+            // converted to a lateral offset at the car's distance using
+            // the horizontal FOV. Planar right axis = (−dz, dx) of the
+            // camera→car direction, so it survives the slow orbit.
+            // Strictly garage-only: the intro (home), the multiplayer
+            // lobby and the loading screen share this branch, and none of
+            // them have the side sheet.
+            if (
+              window.innerWidth >= 768 &&
+              !showIntroRef.current &&
+              !showLobbyRef.current &&
+              !loadingRef.current
+            ) {
+              const dx = carPos.x - camPos.x
+              const dz = carPos.z - camPos.z
+              const plan = Math.hypot(dx, dz) || sr
+              const hfovHalf = Math.atan(
+                Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) *
+                  camera.aspect,
+              )
+              const shift =
+                ((2 * 200) / window.innerWidth) * plan * Math.tan(hfovHalf)
+              camLook.x += (-dz / plan) * shift
+              camLook.z += (dx / plan) * shift
+            }
             camera.lookAt(camLook)
             if (Math.abs(camera.fov - 58) > 0.05) {
               camera.fov += (58 - camera.fov) * Math.min(1, dt * 2)
@@ -1701,6 +2119,34 @@ export default function App() {
     }
   }, [session])
 
+  // Which screen owns the viewport right now. Each overlay's mount is
+  // held open a beat past its closing condition (via usePresence) so
+  // <Screen> can finish the exit timeline before React tears it down.
+  const menuOn = !loading && !error && !started && !showMultiplayerLobby && !showIntro
+  const pauseOn = !loading && !error && started && paused && !race.finished
+  const introOn = showIntro && !started
+  const resultsOn = !loading && !error && started && race.finished
+  // In-world HUD, cluster, and the online badge: they fade out with the
+  // pause and results backdrops instead of blinking out.
+  const dashOn = !loading && !error && started && !race.finished
+  const hudOn = !loading && !error && started && !paused && !race.finished
+  const badgeOn = netConnected && started && !race.finished
+  const menuVisible = usePresence(menuOn, 300)
+  const pauseVisible = usePresence(pauseOn, 240)
+  const introVisible = usePresence(introOn, 480)
+  const loadingVisible = usePresence(loading, 320)
+  const lobbyVisible = usePresence(showMultiplayerLobby, 300)
+  const resultsVisible = usePresence(resultsOn, 340)
+  const dashVisible = usePresence(dashOn, 260)
+  const hudVisible = usePresence(hudOn, 260)
+  const badgeVisible = usePresence(badgeOn, 220)
+  // The results screen needs the standings it was built with while it
+  // fades out — setRace(emptyRace) lands in the same commit as the exit.
+  const finishedRaceRef = useRef<RaceSnapshot>(emptyRace)
+  useEffect(() => {
+    if (race.finished) finishedRaceRef.current = race
+  }, [race])
+
   return (
     <div
       className={`relative w-screen h-screen overflow-hidden bg-black ${started && !paused && !race.finished ? "cursor-none" : ""}`}
@@ -1709,35 +2155,69 @@ export default function App() {
       {}
       <SpeedLines ref={speedLinesRef} />
       {showNetDiag && <NetDiagPanel />}
-      {!loading && !error && started && !race.finished && (
-        <Dashboard tele={tele} />
+      {dashVisible && (
+        <Screen
+          open={dashOn}
+          className="pointer-events-none absolute inset-0"
+          from={{ autoAlpha: 0 }}
+          to={{ duration: 0.6, delay: 0.12 }}
+          exit={{ duration: 0.26, ease: EASE.in }}
+        >
+          <Dashboard tele={tele} />
+        </Screen>
       )}
-      {!loading && !error && started && !paused && !race.finished && (
-        <RaceHud race={race} />
+      {hudVisible && (
+        <Screen
+          open={hudOn}
+          className="pointer-events-none absolute inset-0"
+          from={{ autoAlpha: 0 }}
+          to={{ duration: 0.35, delay: 0.25 }}
+          exit={{ duration: 0.24, ease: EASE.in }}
+        >
+          <RaceHud race={race} />
+        </Screen>
       )}
-      {!loading && !error && started && !paused && !race.finished && (
-        <RaceLiveBoard race={race} />
+      {hudVisible && (
+        <Screen
+          open={hudOn}
+          className="pointer-events-none absolute inset-0"
+          from={{ autoAlpha: 0 }}
+          to={{ duration: 0.4, delay: 0.35 }}
+          exit={{ duration: 0.24, ease: EASE.in }}
+        >
+          <RaceLiveBoard race={race} />
+        </Screen>
       )}
-      {!loading &&
+      {hudVisible &&
+        !loading &&
         !error &&
         started &&
         !paused &&
         !race.finished &&
         lockHint && (
-          <div className="absolute bottom-32 left-1/2 -translate-x-1/2 rounded-full border border-white/15 bg-black/70 px-5 py-2 text-[12px] tracking-wide text-gray-200 backdrop-blur">
-            Click anywhere to get the mouse back
-          </div>
+          <Screen open from={{ autoAlpha: 0 }} to={{ duration: 0.3 }}>
+            <div className="pointer-events-none absolute bottom-32 left-1/2 -translate-x-1/2 rounded-full border border-white/15 bg-black/70 px-5 py-2 text-[12px] tracking-wide text-gray-200 backdrop-blur">
+              Click anywhere to get the mouse back
+            </div>
+          </Screen>
         )}
-      {netConnected && started && !race.finished && (
-        <MultiplayerHudBadge
-          roomId={netRoomId}
-          playerCount={netPeers.length + 1}
-          pingMs={netPeers[0]?.pingMs ?? 0}
-          onLeave={handleLeaveRoom}
-        />
+      {badgeVisible && (
+        <Screen
+          open={badgeOn}
+          from={{ autoAlpha: 0 }}
+          to={{ duration: 0.4 }}
+          exit={{ duration: 0.2, ease: EASE.in }}
+        >
+          <MultiplayerHudBadge
+            playerCount={netPeers.length + 1}
+            pingMs={netPeers[0]?.pingMs ?? 0}
+            onLeave={handleLeaveRoom}
+          />
+        </Screen>
       )}
-      {!loading && !error && !started && !showMultiplayerLobby && (
+      {menuVisible && (
         <RaceMenu
+          open={menuOn}
           rivals={rivals}
           distanceKm={distanceKm}
           onRivals={setRivals}
@@ -1750,13 +2230,16 @@ export default function App() {
           onPaint={(color) => setPaintFor(carId, color)}
           pool={pool}
           onTogglePool={togglePool}
+          traffic={trafficLevel}
+          onTraffic={selectTraffic}
           onFreeDrive={startGame}
           onStartRace={startRace}
           onOpenMultiplayer={() => setShowMultiplayerLobby(true)}
         />
       )}
-      {showMultiplayerLobby && (
+      {lobbyVisible && (
         <MultiplayerLobby
+          open={showMultiplayerLobby}
           playerName={driverName}
           carColor={driverColor}
           roomId={netRoomId}
@@ -1776,7 +2259,7 @@ export default function App() {
               multiplayerRef.current.announceIdentitySoon()
             }
           }}
-          onJoinRoom={(target, mode) => {
+          onJoinRoom={(target, mode, password) => {
             setJoinError(null)
             setNetRoomId(target)
             // join() reports false when the connection can't even start —
@@ -1787,12 +2270,15 @@ export default function App() {
                 mode,
                 driverName,
                 driverColor,
+                password,
               ) ?? false
             setNetConnected(ok)
           }}
           onLeaveRoom={handleLeaveRoom}
           onStartMultiplayerRace={handleStartMultiplayerRace}
           onStartFreeDrive={handleStartFreeDrive}
+          traffic={trafficLevel}
+          onTraffic={selectTraffic}
           joinError={joinError}
           onBack={() => {
             setJoinError(null)
@@ -1800,76 +2286,162 @@ export default function App() {
           }}
         />
       )}
-      {!loading && !error && started && race.finished && (
-        <RaceResults race={race} onAgain={raceAgain} onMenu={quitToMenu} />
+      {resultsVisible && (
+        <RaceResults
+          open={resultsOn}
+          race={finishedRaceRef.current}
+          onAgain={raceAgain}
+          onMenu={quitToMenu}
+          readyNotice={(() => {
+            if (!multiplayerRef.current?.roomId) return null
+            const ready = netPeers.filter((p) => p.ready).map((p) => p.name)
+            if (ready.length === 0) return null
+            return ready.length === 1
+              ? `${ready[0]} is ready. Hit Race again to join them!`
+              : `${ready.join(", ")} are ready. Hit Race again to join them!`
+          })()}
+        />
       )}
-      {!loading && !error && started && paused && !race.finished && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/55 backdrop-blur-[3px]">
-          <div className="relative w-[380px] overflow-hidden rounded-3xl border border-white/10 bg-[#0b0e14]/95 text-center shadow-[0_30px_100px_rgba(0,0,0,0.7)]">
-            <div className="flex h-[5px]">
-              <div className="flex-1 bg-[#51a7d5]" />
-              <div className="flex-1 bg-[#1c3d7c]" />
-              <div className="flex-1 bg-[#e30613]" />
-            </div>
-            <div className="px-9 pt-8 pb-7">
-              <div className="text-[11px] font-semibold tracking-[0.4em] text-[#8f99a8]">
-                TAKING A BREAK
+      {pauseVisible && (
+        <Screen
+          open={pauseOn}
+          className="absolute inset-0 overflow-y-auto bg-black/55 backdrop-blur-[2px]"
+          from={{ autoAlpha: 0 }}
+          to={{ duration: 0.3, ease: EASE.out }}
+          exit={{ duration: 0.2, ease: EASE.in }}
+          stagger={[
+            { selector: "[data-pause-head]", from: { autoAlpha: 0 } },
+            { selector: "[data-pause-acts]", from: { autoAlpha: 0 } },
+            {
+              selector: "[data-pause-row]",
+              from: { autoAlpha: 0 },
+              each: 0.035,
+              delay: 0.1,
+            },
+          ]}
+        >
+          <div className="flex min-h-full flex-col p-5 md:p-8">
+            <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-4">
+              <div data-pause-head>
+                <div
+                  className="mb-2 h-2.5 w-20"
+                  style={{
+                    backgroundImage:
+                      "repeating-conic-gradient(#51a7d5 0% 25%, #0b0e14 0% 50%)",
+                    backgroundSize: "12px 12px",
+                  }}
+                />
+                <span className="text-[64px] font-bold leading-[0.9] tracking-tight text-white drop-shadow-[0_8px_30px_rgba(0,0,0,0.6)] md:text-[96px]">
+                  Paused
+                </span>
+                <p className="mt-2 text-[13px] tracking-wide text-gray-300">
+                  {netConnected
+                    ? `${getCar(carId).name} · Online · ${netPeers.length + 1} player${netPeers.length === 0 ? "" : "s"}`
+                    : race.active
+                      ? `${getCar(carId).name} · Race · ${race.total} cars · ${(race.distanceM / 1000).toFixed(1)} km`
+                      : `${getCar(carId).name} · Free Roam · ${TRAFFIC_OPTIONS.find((o) => o.id === trafficLevel)?.label} traffic`}
+                </p>
               </div>
-              <h2 className="mt-2 text-4xl font-bold tracking-tight text-white">
-                Paused
-              </h2>
-              <p className="mt-2.5 text-[14px] leading-6 text-gray-300">
-                No rush. Your car is holding right where you left it.
-              </p>
-              <div className="mt-6 space-y-2.5">
+              <div
+                data-pause-acts
+                className="flex w-full flex-col gap-2 sm:w-[280px]"
+              >
                 <button
                   onClick={resumeGame}
-                  className="w-full rounded-2xl bg-[#e30613] px-6 py-3 text-[15px] font-semibold text-white shadow-[0_10px_40px_rgba(227,6,19,0.4)] transition hover:bg-[#f01422] active:scale-[0.98]"
+                  className="w-full bg-[#51a7d5] px-6 py-3 text-[14px] font-semibold text-white transition hover:bg-[#51a7d5]/90 active:scale-[0.98] inline-flex items-center justify-center gap-2"
                 >
                   Keep driving
+                  <Play size={16} />
                 </button>
                 <button
                   onClick={() => {
                     resetRef.current = true
                     resumeGame()
                   }}
-                  className="w-full rounded-2xl border border-white/12 bg-white/5 px-6 py-3 text-[14px] font-medium text-gray-100 transition hover:bg-white/10 active:scale-[0.98]"
+                  className="w-full border border-[#51a7d5] bg-[#51a7d5]/15 px-6 py-3 text-[14px] font-semibold text-[#6ec2f0] transition hover:bg-[#51a7d5]/25 active:scale-[0.98] inline-flex items-center justify-center gap-2"
                 >
+                  <RotateCcw size={16} />
                   Put me back on the road
                 </button>
                 <button
                   onClick={quitToMenu}
-                  className="w-full rounded-2xl border border-transparent px-6 py-2.5 text-[13px] font-medium text-gray-400 transition hover:text-white"
+                  className="w-full border border-white/12 bg-white/5 px-6 py-3 text-[14px] font-medium text-gray-100 transition hover:bg-white/10 active:scale-[0.98] inline-flex items-center justify-center gap-2"
                 >
+                  <LogOut size={16} />
                   Back to the start
                 </button>
               </div>
-              <div className="mt-4 text-[12px] text-gray-500">
-                press Esc to keep driving
+            </div>
+
+            {/* Control reference as tower slices, matching the results
+                screen. The P keycap takes the blue: it's this menu. */}
+            <div className="no-scrollbar mt-auto border-t border-white/10">
+              {(
+                [
+                  ["P", "Pause"],
+                  ["L", "Launch control"],
+                  ["E", "Shift up"],
+                  ["Q", "Shift down"],
+                  ["M", "Transmission mode"],
+                  ["O", "Parking brake"],
+                  ["R", "Reset car"],
+                  ["C", "Camera view"],
+                ] as const
+              ).map(([key, label]) => (
+                <div
+                  key={key}
+                  data-pause-row
+                  className="grid h-10 grid-cols-[44px_1fr] items-center border-b border-white/5 bg-black/30"
+                >
+                  <div
+                    className={`grid h-full place-items-center border-r border-white/5 text-[13px] font-bold ${
+                      key === "P"
+                        ? "bg-[#51a7d5] text-[#0b0e14]"
+                        : "bg-white/[0.04] text-gray-400"
+                    }`}
+                  >
+                    {key}
+                  </div>
+                  <span className="px-3 text-[14px] text-gray-200">
+                    {label}
+                  </span>
+                </div>
+              ))}
+              <div data-pause-row className="py-2 text-center text-[12px] text-gray-500">
+                press P to keep driving
               </div>
             </div>
           </div>
-        </div>
+        </Screen>
       )}
-      {loading && (
-        <div className="absolute inset-0 flex items-center justify-center bg-[#0b0e14] text-white">
+      {loadingVisible && (
+        <Screen
+          open={loading}
+          className="absolute inset-0 flex items-center justify-center bg-[#0b0e14] text-white"
+          from={{ autoAlpha: 0 }}
+          stagger={[
+            { selector: "[data-load]", from: { autoAlpha: 0, y: 16 } },
+          ]}
+        >
           <div className="text-center">
             <div className="text-[11px] font-semibold tracking-[0.4em] text-[#8f99a8]">
               PADDOCK
             </div>
-            <div className="mt-2 text-2xl font-bold">
+            <div data-load className="mt-2 text-2xl font-bold">
               Getting your {getCar(carId).name} ready
             </div>
-            <div className="mt-1 text-sm text-gray-400">
+            <div data-load className="mt-1 text-sm text-gray-400">
               Warming up physics and loading the world
             </div>
           </div>
-        </div>
+        </Screen>
       )}
       {error && (
-        <div
+        <Screen
+          open
           className="absolute inset-0 flex items-center justify-center text-white p-6 cursor-auto [&_*]:cursor-auto"
           style={{ cursor: "auto" }}
+          from={{ autoAlpha: 0 }}
         >
           <div className="max-w-lg rounded-2xl bg-red-950/80 border border-red-500/40 p-5">
             <div className="font-bold text-lg mb-2">Something went wrong</div>
@@ -1886,8 +2458,81 @@ export default function App() {
               Reload world
             </button>
           </div>
-        </div>
+        </Screen>
       )}
+      {introVisible && (
+        <Screen
+          open={introOn}
+          className="absolute inset-0 z-[70] bg-[#0b0e14]/30 p-6 md:p-10 w-full"
+          from={{ autoAlpha: 0 }}
+          to={{ duration: 0.5 }}
+          exit={{ duration: 0.45, ease: EASE.in }}
+          stagger={[
+            { selector: "[data-intro-chip]", from: { autoAlpha: 0 } },
+            {
+              selector: "[data-intro-title]",
+              from: { autoAlpha: 0 },
+              to: { duration: 0.8, ease: EASE.soft },
+            },
+            { selector: "[data-intro-sub]", from: { autoAlpha: 0 } },
+            {
+              selector: "[data-intro-cta]",
+              from: { autoAlpha: 0 },
+              each: 0.08,
+              delay: 0.2,
+            },
+          ]}
+          onClick={() => setShowIntro(false)}
+        >
+          <div className="flex h-full flex-col justify-between w-full">
+            <div className="flex flex-1 items-center justify-center">
+              <div className="w-full">
+                <div
+                  data-intro-chip
+                  className="mb-4 h-3 w-24"
+                  style={{
+                    backgroundImage:
+                      "repeating-conic-gradient(#f5f5f5 0% 25%, #e30613 0% 50%)",
+                    backgroundSize: "14px 14px",
+                  }}
+                />
+                <h1
+                  data-intro-title
+                  className="text-[80px] font-bold leading-[0.85] tracking-tight text-white md:text-[140px]"
+                >
+                  OverSteer
+                </h1>
+                <p
+                  data-intro-sub
+                  className="mt-4 max-w-[480px] text-[15px] text-gray-400"
+                >
+                  Pick your car, race rivals, and roam two-way roads.
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <button
+                data-intro-cta
+                onClick={() => setShowIntro(false)}
+                className="bg-[#51a7d5] px-8 py-3.5 text-[15px] font-semibold text-white transition-colors hover:bg-[#51a7d5]/90"
+              >
+                Enter the garage
+              </button>
+              <div
+                data-intro-cta
+                className="text-[12px] text-gray-500"
+              >
+                press any key or click anywhere to continue
+              </div>
+            </div>
+          </div>
+        </Screen>
+      )}
+      <Wipe
+        token={wipe?.token ?? 0}
+        label={wipe?.label ?? ""}
+        tone={wipe?.red ? "red" : "blue"}
+      />
     </div>
   )
 }
