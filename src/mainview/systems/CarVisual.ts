@@ -16,25 +16,15 @@ export const CAR_MODEL_YAW = Math.PI
 export const SUSP_VISUAL_REF = 0.074
 
 export interface CarVisualOptions {
-  /** GLB path under baseUrl. Defaults to the M3 (legacy behaviour). */
   modelFile?: string
-  /** Real-world length the model auto-scales to. */
   targetLength?: number
-  /** Wheel pivot lookup — explicit names win, else regex. */
   pivots?: { pattern?: string; names?: string[] }
-  /** Fallback/imposter wheel positions (used when != 4 pivots found). */
   wheelSpots?: readonly WheelDef[]
-  /** Wheel radius for fallback cylinders + imposter. */
   wheelRadius?: number
-  /** Paint-material allowlist, forwarded to tintCar (see carTint). */
   paintMatch?: string[]
-  /** Texture rule for single-material textured models (see carTint). */
   paintTexture?: PaintTextureRule
 }
 
-/** Pivot candidates thinner than this fraction of the body length are
- *  brake hardware, not wheels (R8 calipers are ~1.4%, tires ~7%).
- *  Exported so the headless car-matrix script enforces the same rule. */
 export const MIN_PIVOT_FRAC = 0.025
 
 const DEFAULT_MODEL = "models/bmw_m3.glb"
@@ -45,11 +35,8 @@ const modelCache = new Map<
   THREE.Object3D | Promise<THREE.Object3D | null>
 >()
 
-// Scratch vector for the body-space origin drop in syncFromPose.
 const _poseOff = new THREE.Vector3()
 
-// Low-poly imposter kit: shared per wheel radius (~200 tris total).
-// Distant rivals render this (2 draw calls) instead of the full GLB.
 let loBodyGeo: THREE.BufferGeometry | null = null
 let loCabinGeo: THREE.BufferGeometry | null = null
 const loWheelGeos = new Map<number, THREE.BufferGeometry>()
@@ -120,17 +107,11 @@ export class CarVisual {
   private hiBody: THREE.Object3D | null = null
   private loGroup: THREE.Group | null = null
   private hiDetail = true
-  /** Paint material clones created by tintCar — recolored live by setTint. */
   private tintedMats: THREE.MeshStandardMaterial[] = []
-  /** Imposter body paint, kept in sync with the hi-detail tint. */
   private loPaint: THREE.MeshStandardMaterial | null = null
-  /** Newest requested tint; applied at load end if it landed mid-load. */
   private lastTint: number | undefined = undefined
-  /** Merged static meshes (body + per-wheel) shown in hi detail. */
   private hiMerged: THREE.Object3D[] = []
-  /** Per-instance red lamp clones (empty for textured single-material cars). */
   private brakeLights: BrakeLight[] = []
-  /** Smoothed 0..1 glow — 0 is running lights, 1 is full brake. */
   private brakeLevel = 0
 
   async load(
@@ -141,7 +122,6 @@ export class CarVisual {
     const modelFile = opts?.modelFile ?? DEFAULT_MODEL
     const source = await loadSharedModel(baseUrl, modelFile)
     if (!source) throw new Error("Model not loaded")
-    // A setTint() may have landed while the model was loading — newest wins.
     const effective = this.lastTint ?? tint
     const model = source.clone(true)
     this.tintedMats =
@@ -187,9 +167,6 @@ export class CarVisual {
 
     this.group.updateMatrixWorld(true)
     const wheelGroups: THREE.Object3D[] = []
-    // Pivot = non-mesh node with children whose name matches the car's
-    // pivot spec. Thinner-than-a-tire matches (brake discs, calipers)
-    // are dropped by the min-size filter.
     const pivotBox = new THREE.Box3()
     const pivotSize = new THREE.Vector3()
     const minPivot = longest * s * MIN_PIVOT_FRAC
@@ -277,14 +254,9 @@ export class CarVisual {
       (a, b) =>
         (a.front ? 0 : 2) + (a.left ? 0 : 1) - ((b.front ? 0 : 2) + (b.left ? 0 : 1)),
     )
-    // Merge each car's GLB into a handful of meshes (one per material):
-    // a 50-car pack goes from thousands of draw calls to ~10 per car.
-    // Wheels merge per-pivot so steer/spin keeps working. Any bucket that
-    // can't merge cleanly is left as original meshes (safe fallback).
     this.mergeStatic()
   }
 
-  /** Cheap stand-in body (~200 tris, 2 draw calls) for distant cars. */
   private buildImposter(
     tint?: number,
     wheelSpots?: readonly WheelDef[],
@@ -325,10 +297,6 @@ export class CarVisual {
     this.loGroup = lo
   }
 
-  /**
-   * Swap full model <-> imposter. Far cars cost 2 draw calls instead of
-   * the whole GLB, which is what makes 50-car fields affordable.
-   */
   setDetail(hi: boolean) {
     if (hi === this.hiDetail) return
     if (!this.hiBody || !this.loGroup) return
@@ -347,20 +315,13 @@ export class CarVisual {
     for (const w of this.wheels) {
       w.mesh.traverse((o) => skip.add(o))
     }
-    // Body: merge everything except wheels/lo into per-material meshes.
     this.mergeInto([this.hiBody], this.group, null, skip)
-    // Wheels: merge each pivot's meshes into itself (keeps steer/spin).
     for (const w of this.wheels) {
       const inv = w.mesh.matrixWorld.clone().invert()
       this.mergeInto([w.mesh], w.mesh, inv, new Set())
     }
   }
 
-  /**
-   * Merge descendant meshes of `roots` by material into `target`. Meshes
-   * in `exclude` are untouched. Originals hide only on success, and the
-   * merged meshes are tracked for detail swaps.
-   */
   private mergeInto(
     roots: THREE.Object3D[],
     target: THREE.Object3D,
@@ -431,14 +392,6 @@ export class CarVisual {
     }
   }
 
-  /**
-   * Brake-light glow from `level` (0..1: pedal pressure, or 1 for the park
-   * brake). Instant in both directions — these are LEDs, so there is no
-   * filament warm-up and no afterglow to trail off. Ramping the glow reads
-   * as a bulb fading up and down, which is exactly the wrong part.
-   * No-ops when the level is unchanged, which matters with 50 traffic cars
-   * sharing the frame.
-   */
   setBrake(level: number) {
     if (this.brakeLights.length === 0) return
     const want = Math.max(0, Math.min(1, level))
@@ -447,7 +400,6 @@ export class CarVisual {
     for (const l of this.brakeLights) applyBrakeHeat(l, want)
   }
 
-  /** Runtime shadow toggle — far cars skip the depth pass entirely. */
   setCastShadow(on: boolean) {
     if (on === this.castShadow) return
     this.castShadow = on
@@ -456,11 +408,6 @@ export class CarVisual {
     })
   }
 
-  /**
-   * Recolor body paint live (hi-detail clones, merged meshes sharing them,
-   * and the imposter). Safe to call before load finishes — the newest tint
-   * is applied when loading completes.
-   */
   setTint(color: number) {
     this.lastTint = color
     const c = new THREE.Color(color)
@@ -468,10 +415,6 @@ export class CarVisual {
     this.loPaint?.color.copy(c)
   }
 
-  /**
-   * True when a tint pass ran at load (stock-paint cars have no tinted
-   * clones, so setTint would silently do nothing — callers reload instead).
-   */
   hasTint(): boolean {
     return this.tintedMats.length > 0
   }
@@ -508,10 +451,6 @@ export class CarVisual {
     dt: number,
     compressions?: readonly number[],
   ) {
-    // The -0.72 origin drop must ride in BODY space, not world space:
-    // applied in world Y it stays correct only while upright. Rolled or
-    // flipped, a world-space drop shoves the whole model down through
-    // the ground while the physics body correctly rests on its roof.
     this.group.quaternion.set(rot.x, rot.y, rot.z, rot.w)
     _poseOff.set(0, -0.72, 0).applyQuaternion(this.group.quaternion)
     this.group.position.set(pos.x + _poseOff.x, pos.y + _poseOff.y, pos.z + _poseOff.z)

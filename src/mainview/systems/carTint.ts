@@ -4,11 +4,6 @@ const PAINT_NAMES = /body|paint|chassis|hood|door|bumper|fender|bonnet|shell/i
 const SKIP_NAMES =
   /glass|window|light|lamp|wheel|tire|tyre|rim|brake|caliper|interior|chrome|mirror/i
 
-/** Lamps glow, paint doesn't. Every lamp material in the shipped GLBs
- *  carries an emissive color (M3 headlights are #ffffff, tail lights
- *  #ff0000); no body panel has one. Without this the gray-lightness
- *  heuristic below happily repaints the M3's white headlight strip in the
- *  body color — a black car ends up with black lights. */
 function isLampMaterial(mat: THREE.Material): boolean {
   const emissive = (mat as THREE.MeshStandardMaterial).emissive
   if (!emissive) return false
@@ -30,7 +25,6 @@ function isPaintMaterial(mat: THREE.Material, meshName: string): boolean {
   return max > 0.15 && max - min < 0.18 && c.b >= c.r * 0.7
 }
 
-/** Shared paint palette: garage + multiplayer lobby render the same swatches. */
 export const PAINT_SWATCHES: { name: string; value: number | null }[] = [
   { name: "Stock", value: null },
   { name: "Black", value: 0x000000 },
@@ -46,7 +40,6 @@ export const PAINT_SWATCHES: { name: string; value: number | null }[] = [
   { name: "Teal", value: 0x14b8a6 },
 ]
 
-/** Hex helpers for the react-colorful custom picker. */
 export function numberToHex(color: number): string {
   return "#" + color.toString(16).padStart(6, "0")
 }
@@ -55,32 +48,16 @@ export function hexToNumber(hex: string): number {
   return Number.isFinite(n) ? n & 0xffffff : 0x000000
 }
 
-/**
- * Per-car texture rule for single-material textured models (G-Wagen).
- * Its whole shell — glass, lights, trim included — shares one "body"
- * material, told apart only by the base-color texture (red = outer body,
- * black = glass, white = lights). Stripping the map would paint glass and
- * lights too, so instead we keep the map and neutralize the body texels to
- * white: diffuse tint then lands ONLY on the outer body while glass stays
- * black and lights keep glowing through the (kept) emissive map.
- */
 export interface PaintTextureRule {
-  /** Keep the base-color map on the tint clone (default: strip it). */
   keepMap?: boolean
-  /** Base-map texels within tolerance of this RGB become white. */
   neutralize?: { color: [number, number, number]; tol: number }
 }
 
 export interface TintOptions {
-  /** Allowlist of regex sources vs material/mesh name (see below). */
   match?: string[]
-  /** Texture handling for single-material textured models. */
   texture?: PaintTextureRule
 }
 
-// Neutralized base maps, shared per source texture: white-body canvases are
-// color-agnostic (the picked paint comes from material.color), so every car
-// wearing the same model reuses one.
 const neutralCache = new Map<string, THREE.Texture>()
 
 function neutralizedMap(
@@ -134,25 +111,10 @@ function neutralizedMap(
     neutralCache.set(key, out)
     return out
   } catch {
-    // Tainted canvas / unreadable image: fall back to the original map.
     return null
   }
 }
 
-/** Clone materials and recolor body panels so opponents read as different cars.
- * Returns the tinted clones so callers can recolor later (e.g. when a peer
- * changes paint after joining — see RemoteCar.setColor).
- *
- * `opts.match` is a per-car allowlist of regex sources matched against the
- * MATERIAL name or the mesh name. When provided, ONLY matching materials
- * tint (the generic heuristic is disabled) — this is how cars whose paint
- * the heuristic can't see get painted:
- * - Urus body (Material.001) is a saturated orange the gray-only heuristic
- *   rejects, and its gray trim (Material.003) would false-positive.
- * - G-Wagen uses one "body" material for everything; the mesh-level SKIP
- *   check below still protects its wheels/calipers sharing that material.
- * - R8 explicitly pins "body" so white trim/glass never tint.
- * SKIP (glass/wheels/lights/...) always wins, with or without match. */
 export function tintCar(
   root: THREE.Object3D,
   color: number,
@@ -189,9 +151,6 @@ export function tintCar(
         clone.color.copy(tint)
       }
       if (texRule?.keepMap) {
-        // Textured shell: keep the author's maps (glass stays glass,
-        // lights keep glowing) and neutralize just the body texels so the
-        // picked color shows purely. Leave metal/roughness authored.
         if (texRule.neutralize && clone.map) {
           const neutral = neutralizedMap(
             clone.map,
@@ -201,8 +160,6 @@ export function tintCar(
           if (neutral) clone.map = neutral
         }
       } else {
-        // Untextured paint: the maps would multiply over / glow through
-        // the diffuse color, so drop them and set a car-paint finish.
         if (clone.metalness !== undefined) {
           clone.metalness = Math.max(clone.metalness, 0.45)
           clone.roughness = Math.min(clone.roughness ?? 0.4, 0.45)
@@ -245,16 +202,8 @@ export const RIVAL_COLORS = [
   0x67e8f9,
 ]
 
-/** The player's paint when they haven't picked one: black. */
 export const DEFAULT_PLAYER_COLOR = 0x000000
 
-/**
- * Rims render dark against black tires unless forced white. The GLB uses
- * generic material names, but Material.029 is only ever referenced by the
- * four wheel meshes (tires are Material.016, pure black) — so match by
- * name. Materials are cloned, never mutated: the source model is shared
- * across every car. Call before any geometry merging.
- */
 const RIM_MATERIAL = /^Material\.029$/i
 export function whitenRims(root: THREE.Object3D): void {
   const cache = new Map<string, THREE.MeshStandardMaterial>()
@@ -270,7 +219,6 @@ export function whitenRims(root: THREE.Object3D): void {
       let white = cache.get(std.uuid)
       if (!white) {
         white = std.clone()
-        // Flat white, non-metal: metallic surfaces go dark with no envmap.
         white.color.set(0xffffff)
         white.metalness = 0
         white.roughness = Math.min(white.roughness ?? 0.5, 0.45)

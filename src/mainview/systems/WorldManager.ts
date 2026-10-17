@@ -12,18 +12,10 @@ export function roadYaw(s: number): number {
   return Math.atan2(dx, 1)
 }
 
-/**
- * Body yaw that faces along the road (direction of increasing s). A body
- * with Euler yaw θ faces (-sinθ, -cosθ), while the road runs along
- * (dx/ds, -1) — so the facing yaw is the negation of roadYaw.
- */
 export function roadDirYaw(s: number): number {
   return -roadYaw(s)
 }
 
-// Arc-length table: s (= -z) is NOT distance — the road swings ±180 m in
-// x, so gaps measured in z under-read by up to ~8%. This integrates
-// sqrt(1 + f'(s)²) once so progress differences convert to true metres.
 const ARC_STEP = 5
 const ARC_MIN = -500
 const ARC_MAX = 12500
@@ -57,7 +49,6 @@ export function roadArcLength(s: number): number {
   return a + (b - a) * t
 }
 
-/** True metres along the road between two s-progress values. */
 export function roadGapM(a: number, b: number): number {
   return roadArcLength(a) - roadArcLength(b)
 }
@@ -167,7 +158,6 @@ type PropCategory = "tree" | "rock" | "cloud" | "grass" | "barrel" | "log"
 interface PropVariant {
   im: THREE.InstancedMesh
   category: PropCategory
-  /** Normalised target height (trees ~6.5 m, rocks ~2.5 m, grass ~1 m, clouds ~14 m) */
   targetH: number
 }
 
@@ -175,7 +165,7 @@ interface PropEntry {
   pos: THREE.Vector3
   rot: number
   scale: number
-  variantIdx: number   // index into this.propVariants
+  variantIdx: number
 }
 
 interface CloudEntry {
@@ -192,57 +182,30 @@ interface Hill {
   body?: RAPIER.RigidBody
 }
 
-// Prop mapping (verified against the pack authoring + user):
-// - Trees: ARVORE_SEM, Branches01, Componen12, Group23, Group27, Group4,
-//   Group5, Group6 + all 8 skp* groups (SketchUp trees, trunk + canopy).
-// - Clouds: the 5 NUVEM* groups (white, separate sky pool).
-// - Rocks: Object_111 (grey scattered-rock sheet), split into chunks.
-// - Barrel: Object_113 (brown body) + Object_114 (grey bands) combined.
-// - Fallen log: Object_111 (grey bark) + Object_112 (tan cut ends).
-// - Grass: Object_116 (light-green scattered-grass sheet), chunked.
-// - Skipped: V_Ray_Infi (pack ground plane), 10-vert degenerate specks.
 const TREE_NODES  = ["ARVORE_SEM", "Branches01", "Componen12", "Group23", "Group27", "Group4", "Group5", "Group6",
   "skp3703_1", "skp4847_1", "skp5771_1", "skp665F1", "skp7EEA1", "skp7EEA_1_", "skpC133_1", "skpEFB7_1"]
 const CLOUD_NODES = ["NUVEM1", "NUVEM_0201", "NUVEM_02_1", "NUVEM_1_1", "NUVEM_2_1"]
-// Grass comes from the pack: Object_116 is the light-green field mat.
-// It is baked FLAT (no upright rotation) at a small explicit scale so each
-// instance is a ~8 m ground patch, never a giant sheet over the road.
 
 export class WorldManager {
   group = new THREE.Group()
   private roadSegs: RoadSeg[] = []
   private segLen = WORLD_CONFIG.road.segmentLength
   private ground!: THREE.Mesh
-  /** All instanced prop meshes — trees, rocks, grass. Clouds are separate. */
   private propVariants: PropVariant[] = []
-  /** Cloud instanced meshes, positioned independently from road segments. */
   private cloudVariants: PropVariant[] = []
   private segProps = new Map<number, PropEntry[]>()
   private segMin = 0
   private segMax = -1
   private maxProps = 18000
-  // Incremental instance allocator: each segment owns its slots, so only
-  // changed segments ever touch the GPU. No full recompose, ever.
   private slotFree = new Map<number, number[]>()
   private slotHigh = new Map<number, number>()
   private segSlots = new Map<number, { vi: number; idx: number }[]>()
   private touchedVariants = new Set<number>()
-  // Speed-scaled grass: 0..1 draw fraction, smoothed toward target.
-  // Thinning is uniform (instance layout is effectively random), instant,
-  // and lossless — matrices persist, only the draw count moves.
   private grassDensity = 1
   private propShadows = true
-  // Radial shadow fade for scenery: instances beyond this distance from
-  // the car are discarded in the depth pass (no shadow), nearer ones
-  // shade normally. Per-fragment, so no popping on instance boundaries.
   private readonly SHADOW_FADE_RADIUS = 110
   private shadowFadeMat: THREE.MeshDepthMaterial | null = null
 
-  /**
-   * Kill/restore shadow casting on scenery (trees/rocks/props — never the
-   * cars or grass). At 200+ km/h shadow movement is invisible, but the
-   * extra depth pass over thousands of instances is not free.
-   */
   setPropShadows(on: boolean) {
     if (on === this.propShadows) return
     this.propShadows = on
@@ -252,11 +215,6 @@ export class WorldManager {
     }
   }
 
-  /**
-   * Shared depth material that fades scenery shadows with distance from
-   * the car. Assigned as customDepthMaterial on shadow-casting prop
-   * meshes; the uniform centre tracks the car every frame.
-   */
   private shadowFadeMaterial(): THREE.MeshDepthMaterial {
     if (this.shadowFadeMat) return this.shadowFadeMat
     const mat = new THREE.MeshDepthMaterial({
@@ -300,12 +258,9 @@ export class WorldManager {
     return mat
   }
 
-  /** Hook a prop mesh into distance-faded shadows. */
   private applyShadowFade(im: THREE.InstancedMesh) {
     im.customDepthMaterial = this.shadowFadeMaterial()
   }
-  // Streaming budget: at most this many new segments per frame, front
-  // (visible) first. Spreads generation cost instead of spiking.
   private readonly SEGS_PER_FRAME = 2
   private primed = false
   private readonly scratchM = new THREE.Matrix4()
@@ -316,8 +271,6 @@ export class WorldManager {
   private R?: typeof RAPIER
   private physWorld?: RAPIER.World
   private segColliders = new Map<number, RAPIER.Collider[]>()
-  // Last known car position (updated every frame) — recycled colliders must
-  // never spawn overlapping the car, or the solver ejects it violently.
   private carPos = new THREE.Vector3()
   private hills: Hill[] = []
   private readonly SEG_BEHIND = 12
@@ -325,12 +278,9 @@ export class WorldManager {
   private readonly ROAD_RIB = RIB_DIV
   private loader = new GLTFLoader()
 
-  // Cloud pool: fixed set of clouds that scroll with the car
   private readonly NUM_CLOUDS = 40
   private cloudEntries: CloudEntry[] = []
   private cloudLastCarS = -999999
-  // Grass placement is ON: Object_116 is the pack's scattered grass,
-// baked flat into patch variants (see init).
   private readonly GRASS_ENABLED = true
 
   async init(scene: THREE.Scene, baseUrl: string) {
@@ -372,8 +322,6 @@ export class WorldManager {
       flatShading: true,
     })
     for (let i = 0; i < 22; i++) {
-      // Two tiers: near forested hills hugging the valley (small enough to
-      // climb) + far big peaks for the heavenly backdrop.
       const far = i % 3 === 2
       const radius = far
         ? 120 + this.rand(i * 613 + 7) * 100
@@ -415,15 +363,11 @@ export class WorldManager {
       m.material.map!.repeat.set(1, 1)
       m.material.map!.needsUpdate = true
       m.receiveShadow = true
-      // Bounds are recomputed on every recycle (writeRibbon), so the
-      // renderer culls off-screen segments itself. At speed this is what
-      // keeps the road draw cost flat instead of scaling with velocity.
       m.frustumCulled = true
       this.group.add(m)
       this.roadSegs.push({ mesh: m, s0: -999999 })
     }
 
-    // ── Load low_poly_tree_pack.glb and sort nodes into categories ──────────
     let glbRoot: THREE.Object3D | null = null
     try {
       const glb = await this.loader.loadAsync(`${baseUrl}models/low_poly_tree_pack.glb`)
@@ -434,7 +378,6 @@ export class WorldManager {
     }
 
     if (glbRoot) {
-      // Build a name→node map for the whole hierarchy.
       const nodeByName = new Map<string, THREE.Object3D>()
       glbRoot.traverse((o) => {
         nodeByName.set(o.name, o)
@@ -470,9 +413,6 @@ export class WorldManager {
       buildVariant("tree",  TREE_NODES,  6.5,  150)
       buildVariant("cloud", CLOUD_NODES, 14.0, this.NUM_CLOUDS)
 
-      // Helper: gather named nodes into one temp group for combined bakes
-      // (barrel = 113+114, log = 111+112). Geometries carry world coords and
-      // all ancestors are identity, so regrouping is lossless.
       const bakeNodes = (names: string[]): THREE.Group | null => {
         const g = new THREE.Group()
         let found = false
@@ -500,15 +440,6 @@ export class WorldManager {
         this.propVariants.push({ im, category, targetH })
       }
 
-      // Scattered sheets are split along X into chunk variants so each
-      // instance is a sensibly-sized patch/cluster instead of a giant mat.
-      // Everything gets the -90° bake rotation (see bakeInstanced): the
-      // sheets are thin in raw-Z, so the rotation is what lays them flat.
-      // Grass (Object_116, light green): flat patches hugging the ground.
-      // Grass: one ultra-simple ground-quad variant (2 tris) instead of
-      // chunked sheet geometry. Thousands of instances — vertex cost
-      // dominates, so the model is as small as it gets. Tinted patches
-      // read as grass at speed; near-field detail was never visible.
       {
         const grassGeo = new THREE.PlaneGeometry(7, 7)
         grassGeo.rotateX(-Math.PI / 2)
@@ -520,27 +451,20 @@ export class WorldManager {
         grassIM.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
         grassIM.count = 0
         grassIM.castShadow = false
-        // Must receive: the quads lie over the ground, so without this
-        // they paint flat-lit green straight across car/tree shadows.
         grassIM.receiveShadow = true
         grassIM.frustumCulled = false
         this.group.add(grassIM)
         this.propVariants.push({ im: grassIM, category: "grass", targetH: 0.3 })
       }
-      // Rocks (Object_111, grey): flat rocky clusters.
       const g111 = bakeNodes(["Object_111"])
       if (g111) {
         for (const im of bakeSplit(g111, 6, 150, { uniformScale: 0.012 }))
           pushIM(im, "rock", 0.8, true)
       }
-      // Barrel (Object_113 brown body + Object_114 grey bands): one cluster
-      // variant, baked upright like the trees.
       const barrel = bakeNodes(["Object_113", "Object_114"])
       if (barrel) {
         pushIM(bakeInstanced(barrel, 100, 1.5), "barrel", 1.5, true)
       }
-      // Fallen log (Object_111 grey bark + Object_112 tan cut ends): the
-      // rotation lays it flat on the ground.
       const log = bakeNodes(["Object_111", "Object_112"])
       if (log) {
         pushIM(
@@ -549,7 +473,6 @@ export class WorldManager {
         )
       }
     } else {
-      // Fallback cone tree
       const trunk = new THREE.Mesh(
         new THREE.CylinderGeometry(0.25, 0.4, 2.4, 6),
         new THREE.MeshStandardMaterial({ color: 0x5a3a22 }),
@@ -573,19 +496,14 @@ export class WorldManager {
       }
     }
 
-    // Dress hills with trees/rocks/grass sampled from the baked variants.
-    // Near hills get the full treatment (they're close enough to see);
-    // far peaks get a light touch.
     this.hills.forEach((h, i) =>
       this.dressHill(h, i * 311 + 3, h.radius > 90 ? 10 : 20),
     )
 
-    // Initialise cloud pool
     this.initClouds()
     this.update(0, new THREE.Vector3(0, 0, 0))
   }
 
-  // ── Cloud pool ─────────────────────────────────────────────────────────────
   private initClouds() {
     if (this.cloudVariants.length === 0) return
     const nV = this.cloudVariants.length
@@ -630,9 +548,6 @@ export class WorldManager {
 
   private updateClouds(carS: number, carPos: THREE.Vector3) {
     if (this.cloudVariants.length === 0) return
-    // Scroll clouds: any cloud that has fallen too far behind gets recycled
-    // ahead of the car so the sky is always populated. The behind margin
-    // is generous so looking back never shows an empty sky.
     const behindZ = -(carS - 600)
     const aheadZ  = -(carS - 2000)
     let dirty = false
@@ -655,13 +570,10 @@ export class WorldManager {
     }
   }
 
-  // ──────────────────────────────────────────────────────────────────────────
 
   createPhysicsGround(R: typeof RAPIER, world: RAPIER.World) {
     const g = R.RigidBodyDesc.fixed()
     const body = world.createRigidBody(g)
-    // Slab is 10 m thick (top face still at y=-0.05): a car dropping off a
-    // 100 m hill at speed must never tunnel through a thin plate.
     const col = R.ColliderDesc.cuboid(3000, 5, 3000)
       .setTranslation(0, -5.05, 0)
       .setFriction(1.0)
@@ -669,8 +581,6 @@ export class WorldManager {
     world.createCollider(col, body)
     this.R = R
     this.physWorld = world
-    // One fixed body + trimesh collider per hill. Hill geometry is baked
-    // once and never changes; placeHill just moves mesh + body together.
     for (const hill of this.hills) {
       const hb = world.createRigidBody(R.RigidBodyDesc.fixed())
       const hg = hill.mesh.geometry as THREE.BufferGeometry
@@ -714,7 +624,6 @@ export class WorldManager {
       for (const t of props) {
         const pv = this.propVariants[t.variantIdx]
         if (!pv || pv.category === "grass" || pv.category === "log") continue
-        // Never materialise a collider on top of the car.
         const dx = t.pos.x - this.carPos.x
         const dz = t.pos.z - this.carPos.z
         if (dx * dx + dz * dz < 16) continue
@@ -743,17 +652,12 @@ export class WorldManager {
     const sMid = seg * this.segLen + this.segLen / 2
     const cx = roadCenterX(sMid)
     const side = this.rand(seg * 71 + 5) > 0.5 ? 1 : -1
-    // Clearance accounts for the hill's OWN footprint (radius × apron
-    // flare) plus margin — a cliff can never overlap the road ribbon.
-    // Near hills hug the valley, far peaks sit deep in the backdrop.
     const far = hill.radius > 90
     const clearance = hill.radius * 1.4 + 12
     const lateral =
       clearance + this.rand(seg * 131 + 29) * (far ? 450 : 130)
     const nx = cx + side * lateral
     const nz = -(sMid + (this.rand(seg * 17 + 3) - 0.5) * this.segLen)
-    // Never teleport a hill on top of the car: keep the old spot and retry
-    // on a later update instead of solver-ejecting the car through the world.
     const dx = nx - this.carPos.x
     const dz = nz - this.carPos.z
     const keepOut = hill.radius + 15
@@ -763,7 +667,6 @@ export class WorldManager {
     this.syncHillBody(hill)
   }
 
-  /** Deterministic 2-octave value noise in [-1, 1] for hill displacement. */
   private hillNoise(seed: number, x: number, z: number): number {
     const h2 = (ix: number, iz: number) => {
       let h = Math.imul(seed + Math.imul(ix, 374761393) + Math.imul(iz, 668265263), 1274126177)
@@ -781,14 +684,6 @@ export class WorldManager {
     return oct(x * 0.02, z * 0.02) * 0.65 + oct(x * 0.06 + 13.7, z * 0.06 + 7.1) * 0.35
   }
 
-  /**
-   * Low-poly hill built from scratch on a polar grid: a smooth profile that
-   * is flat-ish on top and — critically — flattens to ZERO slope at the
-   * foot, forming an apron the car can drive up (a hemisphere meets the
-   * ground vertically, which is unclimbable). Noise ridges add character
-   * mid-slope; the foot ring stays clean so terrain meets hill seamlessly.
-   * Vertex-colored green in the valleys fading to grey rock up high.
-   */
   private makeHillGeometry(radius: number, height: number, seed: number): THREE.BufferGeometry {
     const NR = 12
     const NS = 36
@@ -805,7 +700,6 @@ export class WorldManager {
       return x * x * (3 - 2 * x)
     }
 
-    // Center vertex (top of the hill).
     const nTop = this.hillNoise(seed, 0, 0)
     positions.push(0, height + nTop * height * 0.05, 0)
     c.copy(green).lerp(rock, 0.55)
@@ -813,15 +707,12 @@ export class WorldManager {
 
     for (let i = 1; i <= NR; i++) {
       const rho = i / NR
-      // Profile: 1 at the top, easing to 0 WITH zero slope at the foot.
       const prof = Math.pow(1 - smooth(rho), 1.25)
-      // Foot apron: extra radius near the ground so the slope eases in.
       const apron = 1 + (1 - smooth(Math.min(1, rho / 0.35))) * 0.35
       for (let j = 0; j < NS; j++) {
         const th = (j / NS) * Math.PI * 2
         const dx = Math.cos(th)
         const dz = Math.sin(th)
-        // Ridge noise, fading to nothing at top and foot.
         const env = Math.sin(Math.PI * Math.min(1, Math.max(0.02, rho)))
         const n = this.hillNoise(seed, dx * rho * radius, dz * rho * radius)
         const rr = radius * rho * apron * (1 + 0.22 * n * env)
@@ -829,7 +720,6 @@ export class WorldManager {
         positions.push(dx * rr, h, dz * rr)
         const rockiness = Math.min(1, Math.max(0, (prof - 0.35) * 1.5 + Math.max(0, n) * 0.3))
         c.copy(green).lerp(dark, Math.max(0, -n) * 0.5).lerp(rock, rockiness)
-        // Snow caps on tall peaks: blend to white above ~2/3 height.
         if (height > 60) {
           const t = Math.min(1, Math.max(0, (h / height - 0.62) / 0.2))
           const s = t * t * (3 - 2 * t)
@@ -854,7 +744,6 @@ export class WorldManager {
     return geo
   }
 
-  /** Area-weighted random surface points (local coords) with face normals. */
   private sampleHillSurface(
     geo: THREE.BufferGeometry,
     seed: number,
@@ -900,12 +789,6 @@ export class WorldManager {
     return out
   }
 
-  /**
-   * Dress a hill with trees/rocks/grass sampled from the baked variants.
-   * Meshes share the variant geometry/material (no extra GPU memory) and
-   * are parented to the hill, so they recycle along with it. Steep spots
-   * get rocks instead of trees.
-   */
   private dressHill(hill: Hill, seed: number, count: number) {
     const treeVars = this.propVariants.filter((p) => p.category === "tree")
     const rockVars = this.propVariants.filter((p) => p.category === "rock")
@@ -960,14 +843,12 @@ export class WorldManager {
     const out: PropEntry[] = []
     if (this.propVariants.length === 0) return out
     const W = WORLD_CONFIG.vegetation
-    // Separate indices by category for weighted placement
     const treeIdxs = this.propVariants.map((p, i) => p.category === "tree" ? i : -1).filter(i => i >= 0)
     const rockIdxs = this.propVariants.map((p, i) => p.category === "rock" ? i : -1).filter(i => i >= 0)
     const grassIdxs = this.propVariants.map((p, i) => p.category === "grass" ? i : -1).filter(i => i >= 0)
     const barrelIdxs = this.propVariants.map((p, i) => p.category === "barrel" ? i : -1).filter(i => i >= 0)
     const logIdxs = this.propVariants.map((p, i) => p.category === "log" ? i : -1).filter(i => i >= 0)
     const s0 = seg * this.segLen
-    // Road half-width is 8 m — nothing may spawn inside 9.5 m of the centre.
     const ROAD_CLEAR = 9.5
 
     const pushProp = (
@@ -997,12 +878,10 @@ export class WorldManager {
       })
     }
 
-    // Trees + rocks + barrels + logs: sparse, well clear of the road.
     for (let s = s0; s < s0 + this.segLen; s += 8) {
       const seed = Math.floor(s) * 7 + seg * 10007
       const n = 2 + Math.floor(this.rand(seed) * 2)
       for (let i = 0; i < n; i++) {
-        // 75% tree, 15% rock, 5% barrel, 5% fallen log
         const roll = this.rand(seed * 31 + i * 53)
         let pool: number[] = treeIdxs
         let base = 1.4
@@ -1012,18 +891,11 @@ export class WorldManager {
         else if (roll > 0.90 && barrelIdxs.length > 0) { pool = barrelIdxs; base = 1.0; minD = 10; maxD = 50 }
         else if (roll > 0.95 && logIdxs.length > 0) { pool = logIdxs; base = 1.0; minD = 12; maxD = 50 }
         if (pool.length === 0) { pool = treeIdxs; base = 1.4; minD = W.minDistanceFromRoad; maxD = W.maxDistanceFromRoad }
-        // Sink bases slightly below the terrain (ground plane sits at
-        // y=-0.08) so trunks/rocks read as planted, never floating.
         pushProp(s, seed, i, minD, maxD, pool, base, -0.15)
         if (out.length > 60) return out
       }
     }
 
-    // Grass: full ground cover out to the fog in distance-graded bands —
-    // dense small patches near the road, big sparse ones far away. This
-    // keeps the instance count (and draw cost) bounded while the whole
-    // visible map reads as grass. ROAD_CLEAR keeps everything off asphalt.
-    // Grass has no colliders and casts no shadows (cheapest path).
     if (this.GRASS_ENABLED) {
     const bands = [
       { step: 2.0, nMin: 4, nMax: 8, minD: 8, maxD: 45, base: 1.0 },
@@ -1036,8 +908,6 @@ export class WorldManager {
         const seed = Math.floor(s * 4) * 13 + seg * 30011 + 777 + gi * 7919
         const n = b.nMin + Math.floor(this.rand(seed) * (b.nMax - b.nMin + 1))
         for (let i = 0; i < n; i++) {
-          // y=-0.04: safely above the ground plane (-0.08) so the flat
-          // quads never z-fight with it, still below tyre contact.
           pushProp(s, seed, i + 1000 + gi * 500, b.minD, b.maxD, grassIdxs, b.base, -0.04)
           if (out.length > 900) return out
         }
@@ -1050,8 +920,6 @@ export class WorldManager {
 
   private ensureSegs(minSeg: number, maxSeg: number) {
     if (this.primed && this.segMax >= minSeg && this.segMin <= maxSeg) {
-      // Window already covered — return unless budgeted fill is still
-      // catching up on missing segments.
       let complete = true
       for (let s = minSeg; s <= maxSeg; s++) {
         if (!this.segProps.has(s)) {
@@ -1061,7 +929,6 @@ export class WorldManager {
       }
       if (complete) return
     }
-    // Drop out-of-window segments (frees their instance slots in place).
     for (const k of [...this.segProps.keys()]) {
       if (k < minSeg || k > maxSeg) {
         this.freeSeg(k)
@@ -1070,9 +937,6 @@ export class WorldManager {
     }
     let total = 0
     for (const arr of this.segProps.values()) total += arr.length
-    // Integrate missing segments front-first (what the camera sees), at
-    // most SEGS_PER_FRAME per call — except the very first fill, which
-    // runs synchronously inside the loading screen.
     const missing: number[] = []
     for (let s = maxSeg; s >= minSeg; s--) {
       if (!this.segProps.has(s)) missing.push(s)
@@ -1098,7 +962,6 @@ export class WorldManager {
     this.touchedVariants.clear()
   }
 
-  /** Write one segment's props into owned instance slots. */
   private integrateSeg(seg: number, arr: PropEntry[]) {
     const slots: { vi: number; idx: number }[] = []
     for (const t of arr) {
@@ -1128,7 +991,6 @@ export class WorldManager {
     this.segSlots.set(seg, slots)
   }
 
-  /** Release a segment's slots back to the free lists (zeroed matrices). */
   private freeSeg(seg: number) {
     const slots = this.segSlots.get(seg)
     this.segSlots.delete(seg)
@@ -1182,8 +1044,6 @@ export class WorldManager {
         this.placeHill(h, carSeg + this.SEG_AHEAD + (h.seg % 3))
     }
     this.updateClouds(carS, carPos)
-    // Ease grass density toward target (no pops), then draw only the
-    // fraction. Buffer contents are untouched, so scaling back up is free.
     this.grassDensity += (grassTarget - this.grassDensity) * 0.08
     if (Math.abs(grassTarget - this.grassDensity) < 0.005) {
       this.grassDensity = grassTarget
@@ -1210,24 +1070,13 @@ export class WorldManager {
   }
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
 
-/**
- * Bake a Three.js object hierarchy into a single InstancedMesh.
- * Everything gets the -90° X bake rotation: the pack is authored Z-up and
- * the clone is detached from the GLB parents carrying the conversion, so
- * the rotation both stands trees upright AND lays ground sheets flat.
- * Merges child meshes, then normalises height to targetH (or applies
- * uniformScale), rooting the pivot at the bottom centre. Degenerate
- * sub-meshes (stray points / slivers) are dropped.
- */
 function bakeInstanced(
   node: THREE.Object3D,
   maxInstances: number,
   targetH: number,
   opts?: { uniformScale?: number },
 ): THREE.InstancedMesh | null {
-  // Work in a temporary clone so we don't mutate the source node.
   const clone = node.clone()
   clone.rotation.x = -Math.PI / 2
   clone.updateMatrixWorld(true)
@@ -1249,8 +1098,6 @@ function bakeInstanced(
     if (!o.isMesh) return
     const src = o.geometry as THREE.BufferGeometry
     const pos = src.getAttribute("position") as THREE.BufferAttribute | undefined
-    // Drop degenerate meshes: too few verts or a near-zero bounding box
-    // (exporter junk like single-point triangles).
     if (!pos || pos.count < 24) return
     src.computeBoundingBox()
     const bb = src.boundingBox!
@@ -1289,12 +1136,6 @@ function bakeInstanced(
   return im
 }
 
-/**
- * Split a scattered sheet node (grass field, rock field) into `chunks`
- * spatial variants along X. Each chunk becomes its own InstancedMesh with
- * a bottom-centre pivot, so instances are sensibly-sized patches/clusters
- * instead of one giant mat. Returns one mesh per non-empty chunk.
- */
 function bakeSplit(
   node: THREE.Object3D,
   chunks: number,
@@ -1306,7 +1147,6 @@ function bakeSplit(
   clone.rotation.x = -Math.PI / 2
   clone.updateMatrixWorld(true)
 
-  // Merge everything into one non-indexed soup in world coords.
   const parts: THREE.BufferGeometry[] = []
   let mat: THREE.Material | null = null
   clone.traverse((o: any) => {
@@ -1324,7 +1164,6 @@ function bakeSplit(
   const material =
     mat ?? new THREE.MeshStandardMaterial({ color: 0x4d7a2e, roughness: 1 })
 
-  // Bounding range along X for chunking.
   merged.computeBoundingBox()
   const bb = merged.boundingBox!
   const spanX = Math.max(1e-6, bb.max.x - bb.min.x)
@@ -1354,7 +1193,6 @@ function bakeSplit(
     let k = 0
     let minY = Infinity
     let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity
-    // First pass: find chunk bounds (pre-scale, for pivot).
     for (const t of bin) {
       for (let v = 0; v < 3; v++) {
         const vi = t * 3 + v
@@ -1368,8 +1206,6 @@ function bakeSplit(
     }
     const ccx = (minX + maxX) / 2
     const ccz = (minZ + maxZ) / 2
-    // flattenY compresses vertical variation toward the base so ground
-    // mats become thin decals instead of floating slabs.
     const fy = opts.flattenY ?? 1
     for (const t of bin) {
       for (let v = 0; v < 3; v++) {

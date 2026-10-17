@@ -8,19 +8,18 @@ const MAX_KMH = 340
 type Side = "left" | "right"
 type Kind = "speed" | "rpm"
 
-// ---- geometry (viewBox units; viewBox is S x S, pivot in the corner) --------
 const S = 200
 const R_RIM = 190
 const R_PROG = 185
 const R_BAND = 180
-const R_TICK = 180 // outer end of ticks
+const R_TICK = 180
 const R_LABEL = 150
 const R_HUB = 135
-const START = 6 // degrees from the bottom edge where the scale begins
-const END = 84 // degrees where it ends (90 = the screen's side edge)
-const N_BASE = R_HUB - 20 // start (hidden under the hub)
-const N_SPLIT = R_TICK - 40 // where the red tip begins
-const N_END = R_TICK - 2 // outer end of the needle
+const START = 6
+const END = 84
+const N_BASE = R_HUB - 20
+const N_SPLIT = R_TICK - 40
+const N_END = R_TICK - 2
 
 const SANS = 'Inter, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif'
 
@@ -55,7 +54,6 @@ function sector(side: Side, r: number) {
 
 const ease = (x: number) => x * x * (3 - 2 * x)
 
-// ---- refs ------------------------------------------------------------------
 interface DialRefs {
   needle: { current: SVGGElement | null }
   progress: { current: SVGPathElement | null }
@@ -74,7 +72,6 @@ function useDialRefs(): DialRefs {
   }
 }
 
-// ---- scale (ticks, labels, red band) ----------------------------------------
 function buildScale(
   side: Side,
   kind: Kind,
@@ -152,7 +149,6 @@ function buildScale(
   return out
 }
 
-// ---- telltale icons (drawn in a 24x24 box) -----------------------------------
 function ParkIcon() {
   return (
     <g
@@ -190,7 +186,6 @@ function DriftIcon() {
   )
 }
 
-// ---- the dial ----------------------------------------------------------------
 interface DialProps {
   side: Side
   kind: Kind
@@ -282,7 +277,7 @@ function Dial({
         </linearGradient>
       </defs>
 
-      {/* face + rim */}
+      {}
       <path
         d={sector(side, R_RIM + 3)}
         fill={`url(#${id}-face)`}
@@ -309,10 +304,10 @@ function Dial({
         strokeWidth="1"
       />
 
-      {/* scale */}
+      {}
       {scale}
 
-      {/* progress arc (lit track behind the needle) */}
+      {}
       <path
         ref={refs.progress}
         d={arc(side, R_PROG, START, START)}
@@ -320,7 +315,7 @@ function Dial({
         strokeWidth="3"
       />
 
-      {/* needle: pivot is the screen corner; the hub below covers its base */}
+      {}
       <g
         ref={refs.needle}
         transform={`rotate(${sign * START} ${cx} ${S})`}
@@ -330,7 +325,7 @@ function Dial({
         <polygon points={tip} fill="#ff3b30" />
       </g>
 
-      {/* hub overlaps the needle base */}
+      {}
       <path d={sector(side, R_HUB)} fill={`url(#${id}-hub)`} />
       <path
         d={arc(side, R_HUB, 0, 90)}
@@ -346,7 +341,7 @@ function Dial({
         opacity="0.8"
       />
 
-      {/* readout */}
+      {}
       <text
         ref={refs.num}
         x={X(52)}
@@ -375,7 +370,7 @@ function Dial({
         {caption}
       </text>
 
-      {/* telltale */}
+      {}
       <g transform={`translate(${iconPos.x} ${iconPos.y})`}>
         <g ref={refs.icon} style={{ color: OFF, opacity: 0.85 }}>
           {kind === "speed" ? <ParkIcon /> : <DriftIcon />}
@@ -385,7 +380,6 @@ function Dial({
   )
 }
 
-// ---- per-frame painters --------------------------------------------------------
 function paintDial(
   refs: DialRefs,
   side: Side,
@@ -424,13 +418,10 @@ function paintTelltale(
   el.style.filter = on && lit ? `drop-shadow(0 0 4px ${color})` : "none"
 }
 
-// ---- dashboard -------------------------------------------------------------------
 export default function Dashboard({ tele }: { tele: CarTelemetry }) {
   const teleRef = useRef(tele)
   teleRef.current = tele
 
-  // Per-car dial scaling rides on telemetry (~20 Hz); the rAF loop reads
-  // teleRef live so a car swap picks up the new scale immediately.
   const dashMaxRpm = tele.dash?.maxRpm ?? MAX_RPM
   const dashRedFrom = tele.dash?.redFromRpm ?? RED_FROM_RPM
   const dashYellowFrom = dashRedFrom - 1000
@@ -460,7 +451,7 @@ export default function Dashboard({ tele }: { tele: CarTelemetry }) {
     let lastNumT = -1e9
     let lastGear = ""
     let popT = -1e9
-    const BOOT = 1500 // self-test sweep on mount, like a real cluster
+    const BOOT = 1500
 
     const loop = (now: number) => {
       raf = requestAnimationFrame(loop)
@@ -483,14 +474,12 @@ export default function Dashboard({ tele }: { tele: CarTelemetry }) {
       dRpm += (tRpm - dRpm) * (1 - Math.exp(-dt * 14))
       dKmh += (tKmh - dKmh) * (1 - Math.exp(-dt * 10))
 
-      // ---- speed
       paintDial(spd, "left", dKmh / dash.kmh, BLUE, 0.9)
       if (spd.num.current && (booting || now - lastNumT >= 500)) {
         lastNumT = now
         spd.num.current.textContent = String(Math.round(dKmh))
       }
 
-      // ---- rpm
       const limiter = !booting && dRpm >= dash.red
       const warning = !booting && dRpm >= dash.yellow
       const flash = limiter ? (Math.sin(now * 0.045) > 0 ? 1 : 0.1) : 1
@@ -521,7 +510,6 @@ export default function Dashboard({ tele }: { tele: CarTelemetry }) {
             : "none"
       }
 
-      // ---- gear (with a small pop on change)
       const gear = t.gearLabel
       const g = rpm.num.current
       if (g) {
@@ -538,7 +526,6 @@ export default function Dashboard({ tele }: { tele: CarTelemetry }) {
         )
       }
 
-      // ---- telltales: all lit during the self-test, then live
       const blink = Math.floor(now / 170) % 2 === 0
       paintTelltale(spd.icon.current, booting || t.parkingBrake, RED, true)
       paintTelltale(
@@ -551,7 +538,6 @@ export default function Dashboard({ tele }: { tele: CarTelemetry }) {
 
     raf = requestAnimationFrame(loop)
     return () => cancelAnimationFrame(raf)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const launching = tele.launchArmed || tele.launching

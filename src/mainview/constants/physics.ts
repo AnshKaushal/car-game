@@ -69,11 +69,6 @@ export const CAR_PHYSICS = {
     preloadTorque: 50,
   },
 
-  // Which axles receive drive torque. RWD-only historically (front wheels
-  // got exactly 0); AWD cars split the total shaft torque front/rear.
-  // torqueCapGear1/2 are per-WHEEL caps for 1st/2nd gear (the gears with
-  // more twist than the tires can hold) — each driven wheel is capped
-  // individually, so AWD cars naturally put down ~2x the capped total.
   drivetrain: {
     type: "rwd",
     frontTorqueSplit: 0,
@@ -174,9 +169,6 @@ export const CAR_PHYSICS = {
   },
 } as const
 
-/** Deep-widen the `as const` tune into plain mutable arrays/objects/
- *  numbers so per-car overrides accept any value of the right shape.
- *  CAR_PHYSICS itself stays frozen and assignable to this type. */
 export type Widen<T> = T extends (...args: never[]) => unknown
   ? T
   : T extends readonly (infer U)[]
@@ -193,10 +185,8 @@ export type Widen<T> = T extends (...args: never[]) => unknown
 
 export type CarPhysicsConfig = Widen<typeof CAR_PHYSICS>
 
-export const DEFAULT_PHYSICS_CONFIG: CarPhysicsConfig =
-  deepMutable(CAR_PHYSICS)
+export const DEFAULT_PHYSICS_CONFIG: CarPhysicsConfig = deepMutable(CAR_PHYSICS)
 
-/** Deep-copy readonly `as const` data into plain mutable structures. */
 export function deepMutable<T>(v: T): Widen<T> {
   if (Array.isArray(v)) return v.map(deepMutable) as Widen<T>
   if (v && typeof v === "object") {

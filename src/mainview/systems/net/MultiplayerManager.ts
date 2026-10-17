@@ -36,16 +36,9 @@ import type {
   PeerPlayer,
 } from "./types"
 
-const BROADCAST_INTERVAL_MS = 33 // ~30 Hz update rate
+const BROADCAST_INTERVAL_MS = 33
 const PING_INTERVAL_MS = 2000
 
-/**
- * Room password gate: peers verify each other's HELLO against this
- * hash before admitting them to the roster. Room code conditioned so
- * the same password doesn't open every room. FNV-1a (not a crypto
- * primitive — this is a membership gate, the transport is already
- * trusted WebRTC direct links; the point is keeping strangers out).
- */
 export function roomPasswordHash(roomId: string, password: string): string {
   const text = `oversteer:${roomId}:${password}`
   let h = 0x811c9dc5
@@ -76,10 +69,8 @@ export class MultiplayerManager {
   public localName: string
   public localColor: number
   public localColorHex: string
-  /** Car registry id broadcast to peers (selectable in the menu). */
   public localCarId: string = DEFAULT_CAR_ID
   public roomId: string | null = null
-  /** Hash of the room password (null = open room). Peers are vetted at HELLO. */
   public roomPasswordHashV: string | null = null
   public mode: MultiplayerMode = "p2p"
 
@@ -87,7 +78,6 @@ export class MultiplayerManager {
   private lanWs: WebSocket | null = null
   private sendStateAction: ((data: CarStatePacket) => void) | null = null
   private sendEventAction: ((data: NetworkEventPacket) => void) | null = null
-  /** Peers we rejected at the password gate — their packets are dropped. */
   private deniedIds = new Set<string>()
 
   public peers = new Map<string, PeerPlayer>()
@@ -97,8 +87,6 @@ export class MultiplayerManager {
   private lastBroadcast = 0
   private lastPing = 0
   private packetSeq = 0
-  // Phase 2: seq is monotonic within one room join only (reset per join);
-  // localSession disambiguates rejoins/restarts for receivers.
   private localSession = ""
   private sessions = new PeerSessionTracker()
 
@@ -118,17 +106,12 @@ export class MultiplayerManager {
     this.callbacks = cbs
   }
 
-  /** Player picked a different car — rebroadcast so peers swap the ghost. */
   public setLocalCarId(carId: string) {
     if (carId === this.localCarId) return
     this.localCarId = carId
     this.announceIdentitySoon()
   }
 
-  /** Shared HELLO body — carId lets peers resolve the ghost model, the
-   *  session id disambiguates rejoins, passHash clears the room gate (or
-   *  announces we think the room is open — it doesn't matter; the hash
-   *  is what peers with a lock compare). */
   private helloPayload() {
     return {
       name: this.localName,
@@ -138,7 +121,6 @@ export class MultiplayerManager {
       passHash: this.roomPasswordHashV,
     }
   }
-  /** Visual + collider config for a peer's ghost from its carId. */
   private remoteOptsFor(peer: PeerPlayer | undefined) {
     const def = getCar(peer?.carId)
     return {
@@ -150,18 +132,9 @@ export class MultiplayerManager {
     }
   }
 
-  // ---- Rematch readiness (race-again gate) ----
-  // After a net race finishes, "Race again" no longer restarts instantly:
-  // each driver broadcasts READY and rebuilds onto the grid, and the
-  // countdown only runs once EVERYONE in the room is ready. Readiness is
-  // cleared (locally + broadcast) when each driver finishes, so stale
-  // ready flags can never leak from one race into the next. Only the local
-  // flag is ever cleared here — peer flags change solely on receipt, so a
-  // late finisher can never wipe an early bird's already-sent READY.
   public localReady = false
   private localReadyDistanceM: number | null = null
 
-  /** Mark ourselves ready (or not) for the next race and tell the room. */
   public setLocalReady(ready: boolean, distanceM?: number) {
     this.localReady = ready
     if (distanceM !== undefined) this.localReadyDistanceM = distanceM
@@ -175,8 +148,6 @@ export class MultiplayerManager {
     this.notifyPeersChanged()
   }
 
-  /** True when the staged grid may start its countdown. Solo (or roomless)
-   *  always passes — the gate only holds back a real waiting room. */
   public areAllReady(): boolean {
     if (!this.roomId) return true
     if (!this.localReady) return false
@@ -186,8 +157,6 @@ export class MultiplayerManager {
     return true
   }
 
-  /** Names of remote drivers we are still waiting on (local must be ready
-   *  for this to be meaningful — the waiter is the one who clicked). */
   public waitingForNames(): string[] {
     if (!this.roomId || !this.localReady) return []
     const out: string[] = []
@@ -197,15 +166,12 @@ export class MultiplayerManager {
     return out
   }
 
-  /** Fresh race starting now (lobby START_RACE): everyone present is in,
-   *  so seed the gate open instead of staging. Silent — no broadcast. */
   private markRaceStarted() {
     this.localReady = true
     this.localReadyDistanceM = null
     for (const p of this.peers.values()) p.ready = true
   }
 
-  /** Silent reset (leaving a room / tearing down) — no broadcast. */
   private resetReadySilent() {
     this.localReady = false
     this.localReadyDistanceM = null
@@ -223,7 +189,6 @@ export class MultiplayerManager {
     this.activeWorld = world ?? null
     this.activeRapier = rapier ?? null
 
-    // Instantiate RemoteCar for any existing peers
     for (const [id, peer] of this.peers.entries()) {
       if (!this.remoteCars.has(id)) {
         const remote = new RemoteCar(
@@ -241,13 +206,6 @@ export class MultiplayerManager {
     }
   }
 
-  /**
-   * Drop scene/world refs WITHOUT clearing the roster. Must be called
-   * whenever the Rapier world is torn down: after that point any RemoteCar
-   * created from these refs would own bodies in a freed world, and the
-   * next dispose/update on them throws inside Rapier ("borrowed" error)
-   * and blanks the window. Cars are re-created on the next attachScene.
-   */
   detachScene() {
     this.activeScene = null
     this.activeWorld = null
@@ -261,14 +219,9 @@ export class MultiplayerManager {
     carColor?: number,
     password?: string,
   ): boolean {
-    // Idempotent: mashing Connect must not tear down the room and restart
-    // signaling (that orphaned peers mid-handshake). A password change
-    // on the same code DOES rejoin — the room lock travels with us.
     const passHash = password ? roomPasswordHash(target.trim(), password) : null
     const cleanTarget = (target || "").trim()
     if (mode === "p2p") {
-      // No default room: a well-known code like "paddock-1" is a free
-      // door for anyone who knows the app. Empty code is a hard stop.
       if (!cleanTarget) {
         this.failJoin("P2P", new Error("enter a room code or create a new room"))
         return false
@@ -332,7 +285,6 @@ export class MultiplayerManager {
     this.mode = "p2p"
     this.roomPasswordHashV = passHash
     this.applyProfile(playerName, carColor)
-    // New sender session: seq restarts at 0, receivers tell it apart by sess.
     this.packetSeq = 0
     this.localSession = newSessionId()
 
@@ -346,9 +298,6 @@ export class MultiplayerManager {
       roomId,
     )
 
-    // trystero 0.26: makeAction returns an { send, onMessage } object
-    // (not the old [send, receive] tuple) and onPeerJoin/onPeerLeave are
-    // assignable properties. Handlers receive (data, { peerId }).
     const stateAction = this.room.makeAction("state")
     const eventAction = this.room.makeAction("event")
 
@@ -363,12 +312,10 @@ export class MultiplayerManager {
       })
     }
 
-    // High frequency peer state handler
     stateAction.onMessage = (pkt: CarStatePacket, { peerId }: { peerId: string }) => {
       this.handleStatePacket(pkt, peerId)
     }
 
-    // Reliable event handler
     eventAction.onMessage = (evt: NetworkEventPacket, { peerId }: { peerId: string }) => {
       this.handleNetworkEvent(evt, peerId)
     }
@@ -378,7 +325,6 @@ export class MultiplayerManager {
       if (this.deniedIds.has(peerId)) return
       this.registerPeer(peerId)
 
-      // Announce identity to newcomer
       this.sendEvent({
         type: "HELLO",
         senderId: this.localId,
@@ -392,7 +338,6 @@ export class MultiplayerManager {
       this.unregisterPeer(peerId)
     }
 
-    // Greet any peers already present
     this.sendEvent({
       type: "HELLO",
       senderId: this.localId,
@@ -400,8 +345,6 @@ export class MultiplayerManager {
       payload: this.helloPayload(),
     })
 
-    // Show "connected / waiting for peers" immediately — onPeerJoin only
-    // fires once a second peer arrives, otherwise the UI looks dead.
     this.notifyPeersChanged()
   }
 
@@ -415,7 +358,6 @@ export class MultiplayerManager {
     this.mode = "lan"
     this.roomPasswordHashV = passHash
     this.applyProfile(playerName, carColor)
-    // New sender session: seq restarts at 0, receivers tell it apart by sess.
     this.packetSeq = 0
     this.localSession = newSessionId()
 
@@ -423,7 +365,6 @@ export class MultiplayerManager {
     if (!url.startsWith("ws://") && !url.startsWith("wss://")) {
       url = `ws://${url}`
     }
-    // If no port specified, default to 9876
     try {
       const parsed = new URL(url)
       if (!parsed.port) {
@@ -434,7 +375,6 @@ export class MultiplayerManager {
     this.roomId = serverAddress || "localhost:9876"
     console.log(`[Multiplayer LAN] Connecting to ${url} as ${this.localName}`)
 
-    // Throws (bad URL etc.) are caught by join() and surfaced via onJoinError.
     const ws = new WebSocket(url)
     this.lanWs = ws
     let opened = false
@@ -471,7 +411,6 @@ export class MultiplayerManager {
 
         if (!this.peers.has(senderId)) {
           this.registerPeer(senderId)
-          // Respond with our info so newcomer knows who we are
           this.sendEvent({
             type: "HELLO",
             senderId: this.localId,
@@ -492,8 +431,6 @@ export class MultiplayerManager {
     }
 
     ws.onclose = () => {
-      // Never opened = wrong address / host not running: say so instead
-      // of silently dropping back to the lobby.
       if (!opened && this.lanWs === ws) {
         console.warn(`[Multiplayer LAN] Could not reach ${url}`)
         const addr = url.replace(/^wss?:\/\//, "")
@@ -532,8 +469,6 @@ export class MultiplayerManager {
       }
       this.peers.set(peerId, peer)
 
-      // Only with a live world: after teardown activeWorld is detached and
-      // any body created here would live in a freed world (Rapier crash).
       if (this.activeScene && this.activeWorld && !this.remoteCars.has(peerId)) {
         const remote = new RemoteCar(
           peerId,
@@ -578,15 +513,11 @@ export class MultiplayerManager {
   }
 
   private handleStatePacket(pkt: CarStatePacket, senderId: string) {
-    // Denied peers get nothing — not roster entries, not ghosts, not seq.
     if (this.deniedIds.has(senderId)) return
-    // Phase 2: validate fully BEFORE any mutation, then enforce per-peer
-    // ordering. Rejected packets touch nothing — no state, no seq, no pose.
     if (!pkt || typeof pkt !== "object") {
       netDiagInvalid(senderId, "malformed-envelope")
       return
     }
-    // Local arrival time (receiver clock) — the only freshness signal.
     const arrivalMs = performance.now()
     const checked = validateStatePacket(pkt)
     if (!checked.ok) {
@@ -612,14 +543,9 @@ export class MultiplayerManager {
     }
     netDiagSeqAccept(senderId, checked.state.seq, decision === "accept-initial")
     if (decision === "accept-initial") {
-      // New session (or first packet): history from any previous session
-      // must not leak into the interpolation buffer. Fresh cars have an
-      // empty buffer (no-op); existing cars are cleared before appending.
       this.remoteCars.get(senderId)?.resetInterpolation("session-start")
     }
 
-    // State can arrive before onPeerJoin/HELLO — register on demand so the
-    // roster and progress tracking never miss a peer.
     if (!this.peers.has(senderId)) {
       this.registerPeer(senderId)
     }
@@ -653,10 +579,6 @@ export class MultiplayerManager {
   private handleNetworkEvent(evt: NetworkEventPacket, senderId: string) {
     switch (evt.type) {
       case "HELLO": {
-        // Password gate (room lock): a peer whose HELLO hash doesn't
-        // match ours never joins the roster — we deny them and drop
-        // everything they send afterwards. Duplicate HELLO from an
-        // already-admitted peer simply re-runs the (idempotent) gate.
         if (
           this.roomPasswordHashV !== null &&
           evt.payload?.passHash !== this.roomPasswordHashV
@@ -673,12 +595,7 @@ export class MultiplayerManager {
           })
           return
         }
-        // HELLO can win the race with onPeerJoin — register on demand.
         const peer = this.registerPeer(senderId)
-        // Phase 2: pre-arm the sender session (idempotent — duplicates
-        // change nothing). A rejoin's HELLO arrives ahead of its first
-        // states and lets the tracker tell the new session apart from
-        // delayed traffic of the old one.
         this.sessions.noteSession(senderId, evt.payload?.session)
         peer.name = evt.payload?.name || peer.name
         peer.color = evt.payload?.color ?? peer.color
@@ -686,9 +603,6 @@ export class MultiplayerManager {
         if (typeof evt.payload?.carId === "string") {
           peer.carId = evt.payload.carId
         }
-        // Retint the live 3D model, not just the roster dot: paint picked
-        // after joining (or a HELLO arriving after the visual loaded)
-        // must show up on the ghost immediately. Same for the car model.
         const car = this.remoteCars.get(senderId)
         if (car) {
           car.name = peer.name
@@ -747,8 +661,6 @@ export class MultiplayerManager {
         break
       }
       case "DENY": {
-        // We were refused at the password gate: tear the room down and
-        // surface a clear error so the user can try again with the code.
         console.warn("[Multiplayer] Denied by the room (wrong password)")
         this.leave()
         this.callbacks.onJoinError?.(
@@ -775,7 +687,6 @@ export class MultiplayerManager {
     }
   }
 
-  /** Re-broadcast name + paint + car (lobby picks after joining must propagate). */
   public announceIdentity() {
     if (!this.roomId) return
     this.sendEvent({
@@ -788,7 +699,6 @@ export class MultiplayerManager {
 
   private helloTimer: ReturnType<typeof setTimeout> | null = null
 
-  /** Debounced announceIdentity for per-keystroke name edits. */
   public announceIdentitySoon() {
     if (!this.roomId) return
     if (this.helloTimer) clearTimeout(this.helloTimer)
@@ -804,7 +714,6 @@ export class MultiplayerManager {
     progress: number,
   ) {
     if (!this.sendStateAction) return
-    // t is null while the lobby is open (game not started) — nothing to send.
     if (!tele) return
 
     const now = performance.now()
@@ -845,7 +754,6 @@ export class MultiplayerManager {
       netDiagSend()
     } catch {}
 
-    // Periodic ping check
     const wallNow = Date.now()
     if (wallNow - this.lastPing > PING_INTERVAL_MS) {
       this.lastPing = wallNow
@@ -858,13 +766,9 @@ export class MultiplayerManager {
   }
 
   public startMultiplayerRace(distanceM: number, rivals = 0) {
-    // Lobby starts are host-driven and immediate: everyone currently in
-    // the room is seeded ready so the grid goes straight to countdown.
-    // (Rematch readiness is separate — see setLocalReady / areAllReady.)
-    // The AI bot count rides along so every peer spawns the same field.
     this.markRaceStarted()
     this.notifyPeersChanged()
-    const startTimeMs = Date.now() + 3200 // 3.2s countdown for all peers
+    const startTimeMs = Date.now() + 3200
     this.sendEvent({
       type: "START_RACE",
       senderId: this.localId,
@@ -888,8 +792,6 @@ export class MultiplayerManager {
   }
 
   public updateRemoteCars(dt: number, smokeSystem?: TireSmoke) {
-    // Phase 4: sample narrow-phase contacts once per frame (not per
-    // substep) and cache per peer for drive(). Timed for overhead reporting.
     const cs0 = performance.now()
     for (const remote of this.remoteCars.values()) {
       remote.sampleContacts(cs0)
@@ -899,11 +801,9 @@ export class MultiplayerManager {
       remote.update(dt, smokeSystem)
     }
     netDiagRemoteCount(this.remoteCars.size)
-    // Throttled dev summary (5 s, only when netdiag is enabled). Silent otherwise.
     maybeLogNetDiag()
   }
 
-  /** Per-physics-substep ghost drive — call before every world.step(). */
   public driveRemoteBodies(dt: number) {
     for (const remote of this.remoteCars.values()) {
       remote.drive(dt)
@@ -922,7 +822,6 @@ export class MultiplayerManager {
     this.resetReadySilent()
     if (this.room) {
       try {
-        // 0.26 leave() is async — never let it reject unhandled.
         Promise.resolve(this.room.leave()).catch(() => {})
       } catch {}
       this.room = null

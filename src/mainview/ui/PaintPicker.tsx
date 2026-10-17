@@ -7,22 +7,12 @@ import {
   numberToHex,
 } from "../systems/carTint"
 
-/**
- * Paint selector: preset swatches + a custom color dot. The dot is just a
- * round swatch — clicking it opens the react-colorful picker in an animated
- * popout (fixed-positioned so menu scroll containers can't clip it).
- * Swatch taps commit instantly; picker drags commit debounced so the
- * showroom reload path (first pick on a stock-paint car) isn't hammered
- * mid-drag — latest value wins via the showToken guard regardless.
- */
 export function PaintPicker({
   value,
   showStock,
   onPick,
 }: {
-  /** Committed paint (null = stock GLB paint, garage only). */
   value: number | null
-  /** Show the Stock swatch (garage). The lobby is color-only. */
   showStock?: boolean
   onPick: (color: number | null) => void
 }) {
@@ -30,7 +20,6 @@ export function PaintPicker({
   const [open, setOpen] = useState(false)
   const [pos, setPos] = useState({ x: 0, y: 0, above: true })
   const dotRef = useRef<HTMLButtonElement | null>(null)
-  // External change (other swatch, other car) discards an uncommitted draft.
   useEffect(() => {
     setDraft(null)
   }, [value])
@@ -38,10 +27,8 @@ export function PaintPicker({
     if (draft === null) return
     const t = window.setTimeout(() => onPick(hexToNumber(draft)), 150)
     return () => window.clearTimeout(t)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft])
 
-  // Popout dismissal: outside tap, scroll, or resize.
   useEffect(() => {
     if (!open) return
     const close = () => setOpen(false)
@@ -63,7 +50,6 @@ export function PaintPicker({
     ? PAINT_SWATCHES
     : PAINT_SWATCHES.filter((p) => p.value !== null)
   const shown = draft ?? numberToHex(value ?? 0x000000)
-  // A custom (non-preset) color lights up the dot instead of any swatch.
   const isCustom = value !== null && !swatches.some((p) => p.value === value)
 
   const toggle = () => {
@@ -119,7 +105,7 @@ export function PaintPicker({
             />
           )
         })}
-        {/* Custom-color dot: round swatch look, opens the picker popout. */}
+        {}
         <button
           key="__custom"
           ref={dotRef}
@@ -142,9 +128,8 @@ export function PaintPicker({
         </button>
       </div>
 
-      {/* Animated popout, portalled to <body>: menu panels use
-          backdrop-blur (a containing block for `fixed`), so a local fixed
-          popout would be offset by the panel and can land off-screen. */}
+      {
+}
       {open &&
         typeof document !== "undefined" &&
         createPortal(

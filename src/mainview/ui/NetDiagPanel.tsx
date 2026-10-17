@@ -4,7 +4,6 @@ import {
   type NetDiagSnapshot,
 } from "../systems/net/NetDiagnostics"
 
-/** Dev-only floating multiplayer diagnostics. Mount only when enabled. */
 export function NetDiagPanel() {
   const [snap, setSnap] = useState<NetDiagSnapshot | null>(null)
   useEffect(() => {

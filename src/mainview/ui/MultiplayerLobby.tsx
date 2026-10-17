@@ -24,7 +24,6 @@ import {
 export type MultiplayerMode = "p2p" | "lan"
 
 interface MultiplayerLobbyProps {
-  /** False plays the fade-out; the caller holds the mount open for it. */
   open: boolean
   playerName: string
   carColor: number
@@ -43,8 +42,6 @@ interface MultiplayerLobbyProps {
   onBack: () => void
 }
 
-// Short unambiguous room codes (no 0/O, 1/I/L). Uppercase so typed codes
-// always match regardless of caps lock.
 function generateRoomCode(): string {
   const chars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
   const pick = (n: number) =>
@@ -86,8 +83,6 @@ export function MultiplayerLobby({
   const [aiCount, setAiCount] =
     useState<(typeof MULTIPLAYER_AI_COUNTS)[number]>(0)
   const [copied, setCopied] = useState(false)
-  // The room contents replace the join form the moment you connect, and
-  // grow with every arrival: stagger those in rather than blinking them.
   const gridRef = useRef<HTMLDivElement>(null)
   useStaggerIn(
     gridRef,
@@ -152,7 +147,7 @@ export function MultiplayerLobby({
       ]}
     >
       <div className="flex min-h-full flex-col p-5 md:p-8">
-        {/* Headline and the way out, mirroring the results screen. */}
+        {}
         <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-4">
           <div data-lobby-head>
             <div
@@ -203,8 +198,8 @@ export function MultiplayerLobby({
           </div>
         )}
 
-        {/* Everything below sits centered; only the headline row spans the
-            screen. The "Multiplayer" title and the garage button don't move. */}
+        {
+}
         <div
           data-lobby-grid
           ref={gridRef}
@@ -228,7 +223,6 @@ export function MultiplayerLobby({
                       setNameInput(e.target.value)
                       onUpdateProfile(e.target.value, carColor)
                     }}
-                    // Keep game shortcuts (WASD/Enter/Esc) out of text fields.
                     onKeyDown={(e) => e.stopPropagation()}
                     onKeyUp={(e) => e.stopPropagation()}
                     maxLength={18}
@@ -275,7 +269,6 @@ export function MultiplayerLobby({
                         type="text"
                         value={p2pRoomInput}
                         onChange={(e) => setP2pRoomInput(e.target.value)}
-                        // Game keys must type here, not drive the car.
                         onKeyDown={(e) => e.stopPropagation()}
                         onKeyUp={(e) => e.stopPropagation()}
                         autoComplete="off"
@@ -293,8 +286,8 @@ export function MultiplayerLobby({
                         <ArrowUpRight size={16} />
                       </button>
                     </form>
-                    {/* Optional room lock: the same password locks a created
-                        room and unlocks a friends' room on join. */}
+                    {
+}
                     <input
                       type="password"
                       value={passwordInput}
@@ -332,7 +325,6 @@ export function MultiplayerLobby({
                         type="text"
                         value={lanAddressInput}
                         onChange={(e) => setLanAddressInput(e.target.value)}
-                        // Game keys must type here, not drive the car.
                         onKeyDown={(e) => e.stopPropagation()}
                         onKeyUp={(e) => e.stopPropagation()}
                         autoComplete="off"
@@ -393,7 +385,7 @@ export function MultiplayerLobby({
                   </div>
                 )}
 
-                {/* Roster as timing-tower slices, player in the blue. */}
+                {}
                 <div className="border-t border-white/10">
                   {[
                     { id: "you", name: nameInput || playerName, colorHex: colorHex(carColor), pingMs: 0, isYou: true },

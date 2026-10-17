@@ -54,7 +54,6 @@ export function RaceMenu({
   onStartRace,
   onOpenMultiplayer,
 }: {
-  /** False plays the slide-out; the caller holds the mount open for it. */
   open: boolean
   rivals: number
   distanceKm: number
@@ -64,9 +63,7 @@ export function RaceMenu({
   carId: string
   onPrevCar: () => void
   onNextCar: () => void
-  /** Effective paint (explicit pick, else the car's default). */
   paint: number | null
-  /** null = stock GLB paint (full reload); color = live recolor. */
   onPaint: (color: number | null) => void
   pool: string[]
   onTogglePool: (id: string) => void
@@ -112,8 +109,7 @@ export function RaceMenu({
         },
       ]}
     >
-      {/* 3D stage is the live scene behind (showroom orbit cam). The
-          carousel arrows float over it, flanking the car. */}
+      {}
       <div className="relative min-h-[30vh] flex-1">
         <button
           data-fade
@@ -293,9 +289,6 @@ export function RaceMenu({
 }
 
 export function RaceHud({ race }: { race: RaceSnapshot }) {
-  // Each pop fires on the value that changes: the countdown digit, GO,
-  // your place, and the staged card on mount. Hooks must run before the
-  // early return below, or React sees a changing hook count.
   const pillRef = usePop<HTMLDivElement>([race.playerPlace])
   const stagedRef = usePop<HTMLDivElement>([race.staged])
   const countRef = usePop<HTMLDivElement>([race.countdown])
@@ -314,8 +307,7 @@ export function RaceHud({ race }: { race: RaceSnapshot }) {
   return (
     <>
       <div className="pointer-events-none absolute top-5 left-1/2 flex -translate-x-1/2 items-center gap-3 rounded-full border border-white/12 bg-black/55 px-4 py-2 text-white backdrop-blur">
-        {/* The pop lives on an inner row: the pill above is centred with
-            a Tailwind translate, which a GSAP transform would fight. */}
+        {}
         <div ref={pillRef} className="flex items-center gap-3">
           <span className="text-[18px] font-bold tabular-nums">
             {placeLabel(race.playerPlace)}
@@ -406,16 +398,8 @@ function gapText(s: RaceStanding, playerS: number): string {
   return gap >= 0 ? `+${v}` : `-${v}`
 }
 
-/**
- * Live tower, right side: the whole field, scrollable, auto-following
- * your row. Rows are absolutely positioned by place with a top
- * transition, so overtakes glide instead of snapping. Snapshot refreshes
- * at ~2.5 Hz — cheap, and slow enough that fights read clearly.
- */
 export function RaceLiveBoard({ race }: { race: RaceSnapshot }) {
   const [snap, setSnap] = useState<RaceStanding[]>([])
-  // The board renders null until the first snapshot lands, so the slide-in
-  // hangs off this mount rather than the screen's entrance.
   const rootRef = usePop<HTMLDivElement>([])
   const lastRef = useRef(0)
   const scrollRef = useRef<HTMLDivElement | null>(null)
@@ -492,12 +476,10 @@ export function RaceResults({
   onMenu,
   readyNotice,
 }: {
-  /** False plays the fade-out; the caller holds the mount open for it. */
   open: boolean
   race: RaceSnapshot
   onAgain: () => void
   onMenu: () => void
-  /** Multiplayer nudge, e.g. "Nova is ready. Hit Race again to join them!" */
   readyNotice?: string | null
 }) {
   const player = race.standings.find((s) => s.isPlayer)
@@ -506,8 +488,6 @@ export function RaceResults({
   const playerTime = player?.finishTime ?? null
   const km = (race.distanceM / 1000).toFixed(0)
 
-  // One line under the placement: distance, your time, and the margin
-  // that decided the race (cleared when you won, behind otherwise).
   let summary = `${km} km`
   if (playerTime != null) {
     summary += ` · ${formatTime(playerTime)}`
@@ -549,7 +529,7 @@ export function RaceResults({
       ]}
     >
       <div className="flex min-h-full flex-col p-5 md:p-8">
-        {/* Headline: your result, and the way back into the car. */}
+        {}
         <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-4">
           <div data-res-head>
             <div
@@ -600,9 +580,7 @@ export function RaceResults({
           </div>
         )}
 
-        {/* Timing tower: the whole field as full-width slices along the
-            bottom of the screen, like a broadcast standings graphic. The
-            winner's cell is race red, your row is the blue. */}
+        {}
         <div className="no-scrollbar mt-auto max-h-[46vh] overflow-y-auto border-t border-white/10">
           {race.standings.map((row, i) => (
             <div

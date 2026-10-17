@@ -96,7 +96,6 @@ function getLocalIp(): string {
   return "127.0.0.1"
 }
 
-// LAN WebSocket relay
 const lanClients = new Set<any>()
 
 try {
@@ -185,9 +184,6 @@ function createWindow(winUrl: string, windowed = isWindowed) {
   return win
 }
 
-// Configure the native application menu before creating the window.
-// Windows runs chromeless (no menu bar): an explicit empty menu guarantees
-// no default menu appears. Other platforms keep the full menu.
 if (process.platform === "win32") {
   ApplicationMenu.setApplicationMenu([])
 } else {
@@ -229,12 +225,6 @@ ApplicationMenu.setApplicationMenu([
 const url = await getMainViewUrl()
 const mainWindow = createWindow(url, isWindowed)
 
-// Fullscreen intent lives here so the menu toggle is the single source of
-// truth. Note: no watchdog re-assertion — yanking the window back into a
-// Space produces exactly the exit/enter flicker reported, and nothing in
-// this stack exits native fullscreen on Escape (the flicker was
-// pointer-lock churn, fixed page-side). The only way out is the explicit
-// Cmd/Ctrl+F toggle below.
 let wantFullscreen = !isWindowed
 
 ApplicationMenu.on("application-menu-clicked", (event: any) => {
@@ -246,11 +236,6 @@ ApplicationMenu.on("application-menu-clicked", (event: any) => {
   mainWindow.setFullScreen(wantFullscreen)
 })
 
-// Windows has no menu bar, so the Ctrl+F accelerator above doesn't exist
-// there — without this there would be no way out of fullscreen. F11 is the
-// Windows convention. Exit-only (never re-enters): a toggle could steal
-// focus when F11 is pressed in another app while the game idles behind it.
-// Scoped to Windows — global hotkeys need accessibility permission on macOS.
 if (process.platform === "win32") {
   try {
     GlobalShortcut.register("F11", () => {

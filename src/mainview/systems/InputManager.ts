@@ -1,4 +1,3 @@
-/** True when the key event comes from a text field — game keys must not fire. */
 function isTypingTarget(e: KeyboardEvent): boolean {
   const t = e.target as HTMLElement | null
   if (!t) return false
@@ -52,7 +51,6 @@ export class InputManager {
   }
 
   private onKeyDown(e: KeyboardEvent) {
-    // Never hijack keystrokes typed into form fields (lobby name/room inputs).
     if (isTypingTarget(e)) return
     const c = this.normalize(e)
     if (

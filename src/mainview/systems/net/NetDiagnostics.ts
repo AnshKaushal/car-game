@@ -1,10 +1,3 @@
-/**
- * Phase 1 — development-only multiplayer diagnostics.
- *
- * Cheap counters + latest-value samples. No per-substep logging, no
- * allocations in the hot path beyond the first sighting of a peer.
- * Read via `window.__netDiag()` in devtools or mount <NetDiagPanel/>.
- */
 
 export interface PeerDiag {
   recv: number
@@ -24,14 +17,12 @@ export interface PeerDiag {
   snaps: number
   lastSnapCause: string
   lastSnapDistM: number
-  // Phase 3 interpolation state (latest-value samples).
   interpMode: string
   bufSize: number
   extrapMs: number
   underruns: number
   interpResets: number
   lastResetReason: string
-  // Phase 4 correction state (latest-value samples).
   corrMode: string
   inContact: boolean
   contactImpulse: number
@@ -55,7 +46,6 @@ export interface NetDiagSnapshot {
   physicsTickHz: number
   physicsDroppedS: number
   remoteBodies: number
-  /** Last-frame contact-sampling cost across all remotes (ms). */
   contactSampleMs: number
   peers: Record<string, PeerDiag>
   events: Array<{ t: number; msg: string }>
@@ -109,7 +99,6 @@ let physicsTicks = 0
 let physicsDroppedS = 0
 let remoteBodies = 0
 
-// 1-second sliding rate windows.
 let winStart = 0
 let winSend = 0
 let winRecv = 0
@@ -150,7 +139,6 @@ function pushEvent(msg: string) {
   if (events.length > 60) events.splice(0, events.length - 60)
 }
 
-/** Global state-packet send (called after throttle gate passes). */
 export function netDiagSend() {
   const now = performance.now()
   sendTotal++
@@ -158,11 +146,6 @@ export function netDiagSend() {
   rollWindow(now)
 }
 
-/**
- * Packet arrival (Phase 2): counts every well-formed envelope, before
- * validation/ordering. Sequence bookkeeping happens only in
- * netDiagSeqAccept/Reject so rejected packets never advance history.
- */
 export function netDiagRecv(peerId: string, senderT: number) {
   const now = performance.now()
   const p = peer(peerId)
@@ -174,12 +157,9 @@ export function netDiagRecv(peerId: string, senderT: number) {
   rollWindow(now)
 }
 
-/** Accepted packet: advances per-peer sequence history + gap counting. */
 export function netDiagSeqAccept(peerId: string, seq: number, initial = false) {
   const p = peer(peerId)
   if (initial || p.lastSeq < 0) {
-    // (Re)start of sequence history: first packet or a new session.
-    // Reset rather than max() so post-rejoin counters stay meaningful.
     p.lastSeq = seq
     return
   }
@@ -189,7 +169,6 @@ export function netDiagSeqAccept(peerId: string, seq: number, initial = false) {
   if (seq > p.lastSeq) p.lastSeq = seq
 }
 
-/** Rejected-by-ordering packet: duplicate / stale / stale-session. */
 export function netDiagSeqReject(
   peerId: string,
   kind: "duplicate" | "stale" | "stale-session",
@@ -208,7 +187,6 @@ export function netDiagInvalid(peerId: string, reason: string) {
 
 export function netDiagPeerEvent(peerId: string, kind: string) {
   if (kind === "cleanup" || kind === "disconnect" || kind === "timeout") {
-    // Keep counters for the summary; drop live sample on removal elsewhere.
   }
   pushEvent(`${kind} ${peerId.slice(0, 6)}`)
 }
@@ -225,7 +203,6 @@ export function netDiagSnap(peerId: string, cause: string, distM: number) {
   pushEvent(`snap ${peerId.slice(0, 4)} cause=${cause} d=${distM.toFixed(1)}m`)
 }
 
-/** Phase 3: per-drive interpolation sample (latest values only, no log). */
 export function netDiagInterpSample(
   peerId: string,
   mode: string,
@@ -240,7 +217,6 @@ export function netDiagInterpSample(
   p.underruns = underruns
 }
 
-/** Phase 3: interpolation history reset (rare — logged). */
 export function netDiagBufferReset(peerId: string, reason: string) {
   const p = peer(peerId)
   p.interpResets++
@@ -248,7 +224,6 @@ export function netDiagBufferReset(peerId: string, reason: string) {
   pushEvent(`interp-reset ${peerId.slice(0, 4)} reason=${reason}`)
 }
 
-/** Phase 4: frame-rate contact observation (latest values, no log). */
 export function netDiagContact(
   peerId: string,
   touching: boolean,
@@ -267,7 +242,6 @@ export function netDiagContact(
   }
 }
 
-/** Phase 4: per-substep correction sample (latest values only, no log). */
 export function netDiagCorrection(
   peerId: string,
   mode: string,
@@ -283,13 +257,11 @@ export function netDiagCorrection(
   p.posErrM = errM
   p.corrCmd = corrCmd
   p.corrDv = corrDv
-  // suppressedSubsteps counts substeps at 120 Hz -> ms.
   p.suppressMs = Math.round((suppressedSubsteps / 120) * 1000)
   p.contactTransitions = contactTransitions
   p.recoverT = recoverT
 }
 
-/** Phase 4: contact-sampling cost across all remotes, last frame (ms). */
 let contactSampleMs = 0
 export function netDiagContactCost(ms: number) {
   contactSampleMs = ms
@@ -349,7 +321,6 @@ export function getNetDiagSnapshot(): NetDiagSnapshot {
   }
 }
 
-/** True when the dev overlay / verbose log is requested. */
 export function netDiagEnabled(): boolean {
   try {
     if (typeof localStorage !== "undefined") {
@@ -364,7 +335,6 @@ export function netDiagEnabled(): boolean {
 }
 
 let lastLogAt = 0
-/** Throttled summary log (5 s). No-op unless diagnostics are enabled. */
 export function maybeLogNetDiag() {
   if (!netDiagEnabled()) return
   try {

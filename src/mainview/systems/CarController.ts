@@ -31,7 +31,6 @@ export interface CarTelemetry {
   parkingBrake: boolean
   slipRatio: number
   drift: boolean
-  /** Dash scaling for this car (tacho/speedo full-scale + redline). */
   dash: CarDashConfig
 }
 
@@ -59,7 +58,6 @@ function torqueMult(
   return 0
 }
 
-/** Legacy M3 hardpoints — the default when no car preset is passed. */
 export const DEFAULT_WHEELS: [WheelDef, WheelDef, WheelDef, WheelDef] = [
   { x: -0.76, z: -1.51, front: true, left: true },
   { x: 0.76, z: -1.51, front: true, left: false },
@@ -67,7 +65,6 @@ export const DEFAULT_WHEELS: [WheelDef, WheelDef, WheelDef, WheelDef] = [
   { x: 0.76, z: 1.31, front: false, left: false },
 ]
 
-/** Legacy M3 dash scaling — must match the M3 entry in constants/cars. */
 export const DEFAULT_DASH: CarDashConfig = {
   maxRpm: 8000,
   redFromRpm: 6750,
@@ -78,11 +75,9 @@ export class CarController {
   body: RAPIER.RigidBody
   world: RAPIER.World
   R: typeof RAPIER
-  /** Active vehicle tune — one instance per car, never the global. */
   readonly P: CarPhysicsConfig
   readonly wheelDefs: readonly WheelDef[]
   readonly dash: CarDashConfig
-  /** Wheelbase measured off the hardpoints (drives the steering cap). */
   readonly wheelbase: number
 
   gear: Gear = 1
@@ -99,8 +94,6 @@ export class CarController {
   private limiterCut = false
   private launchTimer = 0
   parkingBrake = true
-  // Clutch-feed state: seconds since the last full-throttle stab (or LC
-  // release) in 1st. Feeds torque in progressively to hook the launch.
   private feedT = 99
   private prevThrottle = 0
   private prevLaunching = false
@@ -272,7 +265,6 @@ export class CarController {
     return base
   }
 
-  /** True when no wheel touched ground on the previous substep. */
   private wasAirborneLastStep(): boolean {
     const st = this.suspension.states
     return st.length > 0 && st.every((s) => !s.grounded)
@@ -320,10 +312,6 @@ export class CarController {
     const latVGlobal = linvel.x * right.x + linvel.z * right.z
     const beta = clamp(latVGlobal / Math.max(10, Math.abs(fwdSpeed)), -0.4, 0.4)
 
-    // P toggles the parking brake explicitly. Throttle over 0.3 drags it
-    // off (like an electronic park brake auto-release), but it otherwise
-    // stays exactly where the driver left it — including at a standstill
-    // with no pedals, so the car genuinely starts and stays parked.
     if (input.throttle > 0.3) this.parkingBrake = false
 
     const speedKmh = Math.abs(fwdSpeed) * 3.6
@@ -395,10 +383,6 @@ export class CarController {
         )
       }
       if (this.launchArmed) targetRpm = P.transmission.launchControlRPM
-      // Airborne throttle: wheels unloaded, so the engine flares toward the
-      // limiter and the box walks up through the gears — needle climbs in
-      // flight like a real car. Uses last substep's suspension state (one
-      // substep of lag, harmless).
       if (input.throttle > 0.1 && this.gear >= 1 && this.wasAirborneLastStep()) {
         targetRpm = Math.max(targetRpm, P.engine.revLimiterRPM - 100)
       }
@@ -426,10 +410,6 @@ export class CarController {
     if (this.rpm > LIM) this.rpm = LIM
 
     if (this.autoMode && this.shiftTimer <= 0 && this.gear >= 1) {
-      // Upshift whenever past the upshift point — on or off throttle — so
-      // coasting down from speed walks up the gears instead of hanging in
-      // a low gear at the limiter. Top gear = however many ratios the car
-      // has (7/8/9), never a hardcoded 8.
       if (
         this.rpm > P.transmission.autoUpshiftRPM &&
         this.gear < ratios.length
@@ -455,8 +435,6 @@ export class CarController {
     const tcGain =
       (input.handbrake ? 0 : P.assists.tractionControl) *
       (this.launching || this.launchArmed ? 0.9 : 1)
-    // TC rides the grip peak: full cut lands just past peak slip (~0.3)
-    // instead of deep in wheelspin, so launches hook up instead of cycling.
     if (this.slipRatioAvg > 0.15) {
       let cut = clamp((this.slipRatioAvg - 0.15) / 0.35, 0, 1)
       if (input.throttle > 0.5 && Math.abs(beta) > 0.14 && !this.launching) {
@@ -486,8 +464,6 @@ export class CarController {
               1,
             )
         : 1
-    // AWD: the total shaft torque is split front/rear per car, then
-    // divided per wheel. RWD cars (split 0) behave exactly as before.
     const split = P.drivetrain.frontTorqueSplit
     const rearDriven = split < 0.999
     const frontDriven = split > 0.001
@@ -500,14 +476,6 @@ export class CarController {
       driveDir = dir
       driveTorqueTotal = engineTorque * gearRatio * 0.9 * tcMult * dir
       if (this.launchArmed) driveTorqueTotal = 0
-      // Torque-by-gear (like every modern performance car): 1st/2nd carry
-      // far more twist than the tires can hold, so each driven wheel is
-      // capped at the grip limit instead of boiling the tires. TC stays
-      // as spike guard. Handbrake bypasses everything (burnouts/drifts
-      // need the excess).
-      // Clutch feed: on a full-throttle stab (or LC clutch dump) in 1st,
-      // engage progressively over ~0.7 s instead of flash-spinning the
-      // light wheels on the initial hit.
       if (
         input.throttle > 0.7 &&
         this.prevThrottle <= 0.7 &&
@@ -706,18 +674,12 @@ export class CarController {
         const engFric =
           P.engine.frictionTorqueBase +
           this.rpm * P.engine.frictionTorqueRPMFactor
-        // Unlocked torque converter slips on lift-off: roughly half the
-        // locked-clutch figure reaches the wheels. (The old chassis-level
-        // engine-braking force applied this SAME friction a second time —
-        // that double application is what made lift-off feel like braking.)
         const coastT =
           (engFric * gearRatio * 0.9 * lockup * 0.5) / 2 / wheelRadius
         legacyLong += clamp(-Math.sign(res.vx) * coastT, -2500, 2500)
       }
 
       const lag = this.tireLag[wi]
-      // Relaxation rate floored so contact force exists quickly even from
-      // a standstill.
       const rate =
         (Math.abs(res.vx) + 0.5) / P.wheels.relaxationLength
       lag.fx = (lag.fx + dt * rate * res.fx) / (1 + dt * rate)
@@ -730,11 +692,6 @@ export class CarController {
         rearCount++
       }
 
-      // NOTE: legacyLong (creep / standstill / coast offsets) pushes the
-      // CHASSIS only. Feeding it into the wheel integrator as tire torque
-      // inverts causality at idle (no shaft torque exists at idle rpm): the
-      // wheels spin against the Pacejka force until it cancels the offset
-      // and the car never strolls. Wheels just roll along via roadSpeed.
       this.wheelDynamics.step(
         wi,
         dt,
@@ -786,16 +743,6 @@ export class CarController {
         true,
       )
     }
-    // NOTE: engine braking lives ONLY in the per-wheel coast path above
-    // (single application). A previous chassis-level copy of the same
-    // friction term doubled lift-off decel — removed.
-    // GTA-style self-righting: upside down (or on a door) and nearly still,
-    // throttle/brake rolls the car around its forward axis and steering
-    // adds roll either way — hold W (and steer) to flip back onto the
-    // wheels. Strictly gated so it can never become a blender:
-    // - cuts past ~65° roof lift (upY 0.4): jumps/climbs untouched
-    // - not while plummeting (land first, then right)
-    // - never spins the roll faster than 6 rad/s (solver-safe impacts)
     {
       const upV = new THREE.Vector3(0, 1, 0).applyQuaternion(quat)
       if (upV.y < 0.4 && vMag < 6) {
@@ -817,9 +764,6 @@ export class CarController {
         }
       }
     }
-    // Solver-explosion insurance: nothing in this game legitimately moves
-    // faster than these caps. Unbounded spin/velocity is what pops bodies
-    // through colliders, so clamp both every substep.
     {
       const lv = this.body.linvel()
       const sp2 = lv.x * lv.x + lv.y * lv.y + lv.z * lv.z
